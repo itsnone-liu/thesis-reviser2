@@ -302,6 +302,44 @@ def normalize_cover_info(cover_info: Optional[dict] = None) -> dict:
     return info
 
 
+def extract_title_from_txt(text: str) -> str:
+    """从TXT头部提取论文题目。"""
+    if not text:
+        return ""
+    for line in text.splitlines()[:12]:
+        t = line.strip()
+        if not t:
+            continue
+        m = re.match(r'^(?:论文题目|题目)\s*[:：]\s*(.+)$', t)
+        if m:
+            return m.group(1).strip()
+    return ""
+
+
+def strip_title_from_txt(text: str) -> str:
+    """移除TXT头部的题目行，保留正文/目录内容。"""
+    if not text:
+        return text
+    lines = text.splitlines()
+    out = []
+    skipped = False
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if not skipped and not line.strip():
+            i += 1
+            continue
+        if not skipped and re.match(r'^(?:论文题目|题目)\s*[:：]\s*.+$', line.strip()):
+            skipped = True
+            i += 1
+            while i < len(lines) and not lines[i].strip():
+                i += 1
+            continue
+        out.extend(lines[i:])
+        break
+    return "\n".join(out).lstrip()
+
+
 # ==================== 预处理：标签属性跨行/裸属性修复 ====================
 
 def preprocess_tag_attrs(text):
@@ -2785,6 +2823,9 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
     with open(txt_path, "r", encoding="utf-8") as f:
         full_text = f.read()
     full_text = strip_mech_json_blocks(full_text)
+    txt_title = extract_title_from_txt(full_text)
+    if txt_title:
+        full_text = strip_title_from_txt(full_text)
     # 预处理：吸收跨行属性、包裹裸属性行（兼容GPT输出格式变体）
     full_text = preprocess_tag_attrs(full_text)
 
@@ -2814,10 +2855,13 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
     doc = Document()
     _init_s(doc)
 
+    cover = normalize_cover_info(cover_info)
+    if txt_title and not cover.get("title"):
+        cover["title"] = txt_title
     if cover_info is not None:
-        build_cover(doc, normalize_cover_info(cover_info))  # 允许空字段先出封面
+        build_cover(doc, cover)  # 允许空字段先出封面
     else:
-        build_cover(doc, normalize_cover_info({}))  # 默认空封面，后续可补录
+        build_cover(doc, cover)  # 默认空封面，后续可补录
 
     cn, tn, dn = 0, 0, 0
     next_page_break = False

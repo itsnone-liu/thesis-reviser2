@@ -894,6 +894,58 @@ def check_real_sample_structure_guard(stub_root: Path) -> tuple[bool, str]:
     return True, "ok"
 
 
+def check_title_propagation(stub_root: Path) -> tuple[bool, str]:
+    code = textwrap.dedent(
+        """
+        import tempfile
+        from pathlib import Path
+        import generator
+        from core import txt_to_docx_safe, extract_docx_text
+
+        def fake_llm(prompt, max_tokens=0):
+            if '标签格式校验专家' in prompt:
+                return '{"issues_found": false, "corrections": []}'
+            if '参考文献' in prompt and '列出' in prompt:
+                return '[1] 张三. 示例论文[D]. 某校, 2024.'
+            if '摘要' in prompt and '关键词' in prompt:
+                return '本文围绕示例对象展开研究。\\n关键词：示例；测试'
+            if '第1章' in prompt or '第2章' in prompt or '第3章' in prompt or '第4章' in prompt or '第5章' in prompt or '第6章' in prompt:
+                title = prompt.split('第', 1)[-1].split('章', 1)[-1].split('\\n', 1)[0].strip()
+                return f'第1章 {title}\\n1.1 内容\\n结论性文字。'
+            return '默认内容'
+
+        old_llm = generator.call_llm
+        generator.call_llm = fake_llm
+        try:
+            samples = [
+                ('管理', {'title': 'A公司财务管理问题与对策研究', 'company': 'A公司', 'major': '工商管理'}),
+                ('设计', {'title': '新中式女装改良设计', 'design_type': '服装设计', 'design_object': '新中式女装'}),
+                ('机械', {'title': '某夹具设计与分析', 'mech_object': '铣削夹具', 'major': '机械设计'}),
+                ('土木', {'title': '某市办公楼建筑与结构设计', 'object_name': '某市办公楼', 'major': '土木工程'}),
+            ]
+            for paper_type, profile in samples:
+                txt = generator.generate(profile, paper_type)
+                if not txt.startswith(f'论文题目：{profile[\"title\"]}'):
+                    raise SystemExit(f'{paper_type} txt missing title header')
+
+            with tempfile.TemporaryDirectory() as td:
+                txt_path = Path(td) / 'paper.txt'
+                docx_path = Path(td) / 'paper.docx'
+                txt_path.write_text('论文题目：示例论文题目\\n\\n摘要\\n示例摘要\\n\\n关键词\\n示例\\n', encoding='utf-8')
+                txt_to_docx_safe(str(txt_path), str(docx_path), update=lambda *_: None, cover_info=None, drawing_images={})
+                docx_text = extract_docx_text(str(docx_path))
+                if '论文题目：示例论文题目' not in docx_text:
+                    raise SystemExit('docx cover missing title')
+        finally:
+            generator.call_llm = old_llm
+        """
+    ).strip()
+    proc = run_python_real([], code=code)
+    if proc.returncode != 0:
+        return False, f"exit={proc.returncode}; stderr={proc.stderr.strip()}"
+    return True, "ok"
+
+
 def main() -> int:
     results: list[tuple[str, bool, str]] = []
     with tempfile.TemporaryDirectory() as tmp:
@@ -926,6 +978,7 @@ def main() -> int:
         record(results, "civil label refinement", *check_civil_label_refinement(stub_root))
         record(results, "civil batch/render support", *check_civil_batch_and_render_support(stub_root))
         record(results, "real sample structure guard", *check_real_sample_structure_guard(stub_root))
+        record(results, "title propagation", *check_title_propagation(stub_root))
         record(results, "table tag order valid", *check_table_tag_order_valid(stub_root))
 
     passed = 0

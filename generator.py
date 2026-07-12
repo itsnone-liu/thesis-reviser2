@@ -980,6 +980,18 @@ def _extract_first_match(text: str, patterns: list[str], default: str = "") -> s
     return default
 
 
+def _prepend_paper_title(txt: str, profile: dict) -> str:
+    """在纯文本论文开头补一行题目，供渲染器识别封面题目。"""
+    title = str((profile or {}).get("title") or "").strip()
+    if not title:
+        return txt
+    title_line = f"论文题目：{title}"
+    body = (txt or "").lstrip()
+    if body.startswith(title_line):
+        return body
+    return title_line + "\n\n" + body
+
+
 def _build_civil_parameter_table(full_text: str, profile: dict) -> str | None:
     """当第1章缺失参数表时，按正文和 profile 兜底补一张表。"""
     text = full_text or ""
@@ -1481,6 +1493,7 @@ def _generate_manage(profile: dict, update) -> str:
     txt += "参考文献\n" + "\n".join(refs)
 
     # LLM格式校验（Layer 3）
+    txt = _prepend_paper_title(txt, profile)
     try:
         txt = validate_tag_format(txt, "管理")
     except Exception:
@@ -1575,6 +1588,7 @@ def _generate_design(profile: dict, update) -> str:
         txt = validate_tag_format(txt, "设计")
     except Exception:
         pass
+    txt = _prepend_paper_title(txt, profile)
     update("生成完成！", 100)
     return txt
 
@@ -1711,6 +1725,7 @@ def _generate_mechanical(profile: dict, update) -> str:
         txt += "---PAGE_BREAK---\n"
     txt += "参考文献\n" + "\n".join(refs)
 
+    txt = _prepend_paper_title(txt, profile)
     txt = normalize_mechanical_drawing_tags(txt)
     try:
         txt = validate_tag_format(txt, "机械")
@@ -1785,6 +1800,7 @@ def _generate_civil(profile: dict, update) -> str:
         head, sep, tail = txt.partition("---PAGE_BREAK---\n第2章")
         if sep and "<table" not in head:
             txt = head.rstrip() + "\n\n" + fallback_table + "\n\n" + sep + tail.lstrip()
+    txt = _prepend_paper_title(txt, profile)
     try:
         txt = validate_tag_format(txt, "土木")
     except Exception:
