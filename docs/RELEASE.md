@@ -19,6 +19,36 @@
 - 生成结果、样例 DOCX、PDF、图片统一留在 `output/`
 - 敏感配置通过环境变量注入
 
+## 本地部署
+
+```bash
+git clone https://github.com/itsnone-liu/thesis-reviser2.git
+cd thesis-reviser2
+cp .env.example .env
+```
+
+然后在 shell 或运行环境中设置：
+
+```bash
+export DEEPSEEK_API_KEY="你的DeepSeek Key"
+export IMAGE_API_KEY="你的图片服务 Key"
+```
+
+如果需要可选依赖：
+
+```bash
+pip install python-docx requests pillow matplotlib numpy fastapi uvicorn
+apt install libreoffice poppler-utils
+```
+
+## 运行检查
+
+```bash
+python -m delivery.smoke_test
+python profile.py --help
+python renderer.py --help
+```
+
 ## Git 标签建议
 
 - `v0.1.0`：仓库整理完成
