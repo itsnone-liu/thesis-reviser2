@@ -2549,11 +2549,19 @@ def generate_diagram_image(drawing: dict, save_dir: str) -> Optional[str]:
 
 
 def generate_all_images(drawings: list, save_dir: str, max_workers: int = 2) -> dict:
-    """并发生成所有图纸图片，返回 {seq: local_path}。自动为每个 drawing 分配唯一 seq。"""
+    """并发生成所有图纸图片，返回 {seq: local_path}。
+    注意：只给没有seq的drawing分配序号——补图场景传入的是缺失子集，
+    若无条件重编号1..N会导致文件名与原seq错位、覆盖已有图。"""
     result = {}
     os.makedirs(save_dir, exist_ok=True)
-    for i, d in enumerate(drawings):
-        d["seq"] = i + 1
+    used = {d.get("seq") for d in drawings if d.get("seq")}
+    nxt = 1
+    for d in drawings:
+        if not d.get("seq"):
+            while nxt in used:
+                nxt += 1
+            d["seq"] = nxt
+            used.add(nxt)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         fut_map = {executor.submit(generate_single_image, d, save_dir): str(d["seq"]) for d in drawings}
         for fut in as_completed(fut_map):
