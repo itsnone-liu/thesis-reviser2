@@ -412,6 +412,36 @@ def _serialize(tagname: str, attrs: dict) -> str:
     return " ".join(parts)
 
 
+def fix_placeholder_refs(text: str):
+    """修复正文里LLM忘填的字面图/表编号占位（"如图X所示""见表X"）。
+    规则：占位引用 → 其后最近标签的序号；其后无标签 → 其前最近标签的序号。
+    返回 (修复后文本, 修复次数)"""
+    import re as _re
+    tag_positions = {"图": [], "表": [], "chart": [], "table": []}
+    for m in _re.finditer(r'<(drawing|table)\b', text):
+        kind = "图" if m.group(1) == "drawing" else "表"
+        tag_positions[kind].append(m.start())
+    n_fixed = 0
+    pat = _re.compile(r'([如见由]?[图表])[Xx×?？Nn#](?=(所示|中|如下|所示))')
+
+    def _repl(m):
+        nonlocal n_fixed
+        kind = m.group(1)[-1]  # 图 or 表
+        pos = m.start()
+        cands = tag_positions.get(kind, [])
+        if not cands:
+            return m.group(0)
+        # 最近的后续标签；没有则最近的前置标签
+        after = [p for p in cands if p >= pos]
+        target = after[0] if after else cands[-1]
+        seq = cands.index(target) + 1
+        n_fixed += 1
+        return f"{m.group(1)}{seq}"
+
+    text = pat.sub(_repl, text)
+    return text, n_fixed
+
+
 def audit_and_repair(text: str):
     """主入口：校验并修复文本中的所有标签。
     返回 (修复后文本, 报告dict)。已正确且规范的标签保持原样不动。"""
@@ -473,6 +503,11 @@ def audit_and_repair(text: str):
     # 从后往前替换，避免偏移失效
     for start, end, new in sorted(replacements, key=lambda x: -x[0]):
         text = text[:start] + (new + "\n" if new else "") + text[end:]
+
+    # 正文引用占位修复（"如图X所示"→实际序号）
+    text, n_refs = fix_placeholder_refs(text)
+    if n_refs:
+        report["fixed"]["refs"] = n_refs
     return text, report
 
 
@@ -484,6 +519,7 @@ def render_report_text(report: dict) -> str:
     parts = [f"标签守卫: chart {s['chart']} / table {s['table']} / drawing {s['drawing']}"]
     fixes = []
     if f["typos"]: fixes.append(f"错拼{f['typos']}")
+    if f.get("refs"): fixes.append(f"引用占位{f['refs']}")
     if f["unclosed"]: fixes.append(f"闭合{f['unclosed']}")
     if f["repaired"]: fixes.append(f"修复{f['repaired']}")
     if f["degraded"]: fixes.append(f"降级{f['degraded']}")
