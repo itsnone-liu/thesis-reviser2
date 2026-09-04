@@ -70,11 +70,25 @@ def _scan_tag_spans(text: str):
         j = lt + 1 + len(name)
         in_quote = None
         end = None
+        missing_gt = False
         while j < n:
             ch = text[j]
             if in_quote:
                 if ch == in_quote:
                     in_quote = None
+                    # 引号闭合后紧跟 "/" 但无 ">" → 自闭合缺右尖括号
+                    # （LLM常见笔误：description="..."/正文 直接接后续内容）
+                    k = j + 1
+                    while k < n and text[k] in " \t":
+                        k += 1
+                    if k < n and text[k] == "/":
+                        k2 = k + 1
+                        while k2 < n and text[k2] in " \t":
+                            k2 += 1
+                        if k2 >= n or text[k2] != ">":
+                            end = (k + 1, True)
+                            missing_gt = True
+                            break
             elif ch in ('"', "“", "”"):
                 in_quote = ch
             elif ch == ">" and not in_quote:
@@ -98,7 +112,9 @@ def _scan_tag_spans(text: str):
         endpos, self_closed = end
         raw = text[lt:endpos]
         issues = []
-        if not self_closed:
+        if missing_gt:
+            issues.append("缺右尖括号")
+        elif not self_closed:
             issues.append("未自闭合")
         if name in _TAG_TYPOS:
             issues.append(f"标签名错拼({name})")
@@ -383,7 +399,7 @@ def audit_and_repair(text: str):
         for si in scan_issues:
             if "错拼" in si:
                 report["fixed"]["typos"] += 1
-            elif "闭合" in si:
+            elif "闭合" in si or "尖括号" in si:
                 report["fixed"]["unclosed"] += 1
 
         attrs = _parse_attrs(raw)
@@ -405,10 +421,12 @@ def audit_and_repair(text: str):
 
         entry["issues"] = issues
         entry["action"] = action
+        # 扫描层问题(缺括号/未自闭合/错拼)必须重序列化修复，即使属性校验全通过
+        needs_reserialize = bool(scan_issues)
         if action == "dropped":
             replacements.append((start, end, None))
             report["fixed"]["dropped"] += 1
-        elif issues:
+        elif issues or needs_reserialize:
             replacements.append((start, end, _serialize(canonical, new_attrs)))
             if action == "repaired":
                 report["fixed"]["repaired"] += 1

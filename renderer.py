@@ -47,6 +47,13 @@ def render(txt_path: str, docx_path: str, paper_type: str = "管理",
             raw_text = f.read()
         mech_blocks = extract_mech_json_blocks(raw_text)
         full_text = strip_mech_json_blocks(raw_text)
+        # 标签守卫前置：先规范化标签（补缺括号/错拼等），生图与排版用同一份文本，
+        # 否则生图提取器可能漏掉格式瑕疵的drawing → 排版时才发现缺图
+        try:
+            from tagguard import audit_and_repair
+            full_text, _g = audit_and_repair(full_text)
+        except Exception:
+            pass
         drawings = extract_drawings_from_text(full_text)
         drawings = merge_mech_json_into_drawings(drawings, mech_blocks)
 
