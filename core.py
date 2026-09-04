@@ -33,11 +33,13 @@ except Exception:
 
 # 确定性标签守卫（渲染前校验/修复/降级，无LLM）
 try:
-    from tagguard import audit_and_repair, render_report_text
+    from tagguard import (audit_and_repair, render_report_text,
+                          check_numeric_consistency, consistency_summary)
 except Exception:
     audit_and_repair = None
     render_report_text = None
-    freecad_available = lambda: False
+    check_numeric_consistency = None
+    consistency_summary = None
 
 # ==================== 配置 ====================
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
@@ -1571,6 +1573,23 @@ def add_c(doc, ct: dict, chart_bytes: bytes, cn: int):
     last_p.paragraph_format.space_after = Pt(6)
 
 
+def _table_quality(ct: dict):
+    """表格内容质量评估 → (行数, 空格率%)。用于回执判定"渲染成功但内容残缺"。"""
+    try:
+        shape = canonicalize_design_table_payload(
+            ct.get("header", ""), ct.get("rows", ""),
+            _normalize_table_data(ct.get("data", "")))
+        rows = shape["rows"]
+        if not rows:
+            return 0, 100.0
+        ncell = sum(len(r) for r in rows) or 1
+        nempty = sum(1 for r in rows for c in r
+                     if not str(c).strip() or str(c).strip() == "—")
+        return len(rows), 100.0 * nempty / ncell
+    except Exception:
+        return 0, 100.0
+
+
 def add_t(doc, ct: dict, tn: int):
     """向 docx 中添加表格（table）"""
     title = ct.get("title", f"表{tn}")
@@ -2950,6 +2969,20 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
                 print(f"  [{summary}]")
                 update("标签守卫: " + summary, 35)
         except Exception as e:
+            print(f"标签守卫异常(忽略): {e}")
+    # 一致性守卫：跨章数值冲突检测与修正（标题事实优先/多数值投票）
+    consistency_report = None
+    if check_numeric_consistency is not None:
+        try:
+            full_text, consistency_report = check_numeric_consistency(
+                full_text, title=txt_title or "")
+            csum = consistency_summary(consistency_report) if consistency_summary else ""
+            if csum:
+                print(f"  [{csum}]")
+                update("一致性守卫: " + csum, 36)
+        except Exception as e:
+            print(f"一致性守卫异常(忽略): {e}")
+        except Exception as e:
             print(f"标签守卫异常(跳过): {e}")
 
     update("正在提取标签数据...", 30)
@@ -2999,11 +3032,18 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
         "tables": {"total": 0, "ok": 0, "fallback": 0, "failed": []},
         "drawings": {"total": 0, "ok": 0, "placeholder": 0, "missing_image": []},
         "guard": None,
+        "consistency": None,
     }
     if isinstance(guard_report, dict):
         receipt["guard"] = {
             "scanned": dict(guard_report.get("scanned", {})),
             "fixed": dict(guard_report.get("fixed", {})),
+        }
+    if isinstance(consistency_report, dict):
+        receipt["consistency"] = {
+            "params_scanned": consistency_report.get("params_scanned", 0),
+            "fixed_count": consistency_report.get("fixed_count", 0),
+            "conflicts": consistency_report.get("conflicts", []),
         }
 
     for pt, ct in parts:
@@ -3029,6 +3069,9 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
             tn += 1
             receipt["tables"]["total"] += 1
             try:
+                nrows, empty_ratio = _table_quality(ct)
+                if nrows == 0 or empty_ratio > 50:
+                    raise ValueError(f"内容残缺({nrows}行,空格率{empty_ratio:.0f}%)")
                 add_t(doc, ct, tn)
                 receipt["tables"]["ok"] += 1
             except Exception as e:
@@ -3042,6 +3085,17 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
                     if not ct.get("data") and ct.get("rows"):
                         fallback_ct["data"] = ct.get("rows", "")
                         fallback_ct["rows"] = ""
+                    fr, fe = _table_quality(fallback_ct)
+                    if fr == 0 or fe > 50:
+                        # 结构化兜底也残缺 → 单列清单保住全部内容
+                        toks = [t for t in re.split(
+                            r"[;,，；|｜\n]+",
+                            str(ct.get("rows", "")) + ";" + str(ct.get("data", "")))
+                            if t.strip()]
+                        fallback_ct = dict(ct)
+                        fallback_ct["header"] = "内容"
+                        fallback_ct["rows"] = ""
+                        fallback_ct["data"] = ";".join(toks)
                     add_t(doc, fallback_ct, tn)
                     receipt["tables"]["fallback"] += 1
                 except Exception as e2:
@@ -3248,12 +3302,20 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
         if c_["failed"]:
             flags.append(f"图表失败{len(c_['failed'])}")
         if t_["failed"]:
-            flags.append(f"表格失败{len(t_['failed'])}")
+            flags.append(f"表格降级{len(t_['failed'])}")  # 质量门控/异常→兜底渲染
         if d_["missing_image"]:
             flags.append(f"图纸缺图{len(d_['missing_image'])}")
+        cons = receipt.get("consistency")
+        if cons and cons.get("conflicts"):
+            unfixed = sum(1 for c in cons["conflicts"] if not c.get("fixed"))
+            if unfixed:
+                flags.append(f"数值冲突未修{unfixed}")
         status = "⚠️ " + " / ".join(flags) if flags else "✅ 全部渲染成功"
         print(f"  [渲染回执] chart {c_['ok']}/{c_['total']} | table {t_['ok']}/{t_['total']}"
               f" | drawing {d_['ok']}/{d_['total']} → {status}")
+        if cons and cons.get("conflicts"):
+            print(f"  [一致性] 扫描{cons['params_scanned']}项, 冲突{len(cons['conflicts'])}, "
+                  f"自动修正{cons['fixed_count']}")
         print(f"  [渲染回执] 已写入 {report_path}")
     except Exception as e:
         print(f"渲染回执写入失败: {e}")

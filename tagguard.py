@@ -206,6 +206,29 @@ def _validate_chart(attrs: dict, seq: int):
     return new_attrs, issues, ("repaired" if issues else "ok")
 
 
+def _greedy_matrix(tokens: list, ncols: int):
+    """乱序token流按'行首为非数字'启发式重组成ncols列矩阵。
+    规则：非数字token开新行，其后连续数字补位；数字不足补空串。
+    用于LLM把整表压成乱序数字流的情况（对齐失败时的兜底重建）。"""
+    def _isnum(t):
+        return bool(_POLLUTE_RE.match(t) or _YEAR_RE.match(t))
+    rows, i = [], 0
+    while i < len(tokens):
+        t = tokens[i]
+        if _isnum(t) and rows and len(rows[-1]) < ncols:
+            rows[-1].append(t)
+            i += 1
+            continue
+        row = [t]
+        i += 1
+        while len(row) < ncols and i < len(tokens) and _isnum(tokens[i]):
+            row.append(tokens[i])
+            i += 1
+        row += [""] * (ncols - len(row))
+        rows.append(row)
+    return rows
+
+
 def _validate_table(attrs: dict, seq: int):
     issues = []
     header_raw = attrs.get("header", "") or attrs.get("headers", "") or ""
@@ -214,6 +237,16 @@ def _validate_table(attrs: dict, seq: int):
     data_raw = attrs.get("data", "") or ""
     row_tokens = [r.strip() for r in _SPLIT_RE.split(rows_raw) if r.strip()]
     data_tokens = [t.strip() for t in _SPLIT_RE.split(data_raw) if t.strip()]
+
+    # data 空占位行清理（"|||;|||;..."这类幻觉空行）
+    if data_raw:
+        _rows_before = len([r for r in re.split(r"[;；]+", data_raw) if r.strip()])
+        kept = [r.strip() for r in re.split(r"[;；]+", data_raw)
+                if any(c.strip() for c in re.split(r"[|｜]+", r))]
+        if len(kept) < _rows_before:
+            issues.append(f"data含{_rows_before - len(kept)}个空占位行，已剔除")
+            data_raw = ";".join(kept)
+            data_tokens = [t.strip() for t in _SPLIT_RE.split(data_raw) if t.strip()]
 
     if not headers:
         if not data_tokens and not row_tokens:
@@ -224,28 +257,55 @@ def _validate_table(attrs: dict, seq: int):
     # rows 污染：纯数字/年份/百分比出现在 rows
     polluted = [t for t in row_tokens if _POLLUTE_RE.match(t) or _YEAR_RE.match(t)]
     if polluted:
+        # 空占位data识别: "|;|;|;" 或 ",,," 这类纯分隔符 → 实际为空
         data_rows = [r.strip() for r in re.split(r"[;；]+", data_raw) if r.strip()]
+        data_cells = [c for r in data_rows for c in re.split(r"[|｜]+", r) if c.strip()]
+        if not data_cells:
+            data_rows = []
+            data_raw = ""
         if not data_rows:
-            # data为空 → rows里塞的是整张表 → 按列数重排进data
+            # data为空 → rows里塞的是整张表 → 先试整除重排，失败则行首启发式重建
             ncols = len(headers)
-            if ncols > 1 and len(row_tokens) % ncols == 0 and len(row_tokens) >= ncols * 2:
+            if ncols > 1 and len(row_tokens) >= ncols * 2 and len(row_tokens) % ncols == 0:
                 data_raw = ";".join(
                     "|".join(row_tokens[i:i + ncols])
                     for i in range(0, len(row_tokens), ncols))
                 row_tokens, data_tokens = [], []
                 issues.append(f"rows被数据污染({len(polluted)}项)，已按{ncols}列重排进data")
+            elif ncols > 1 and len(row_tokens) >= ncols * 2:
+                matrix = _greedy_matrix(row_tokens, ncols)
+                # 缺值格用"—"占位：空串会被下游split丢弃导致列错位
+                data_raw = ";".join("|".join((c if c else "—") for c in r) for r in matrix)
+                row_tokens, data_tokens = [], []
+                ragged = sum(1 for r in matrix if any(c == "" for c in r))
+                issues.append(f"rows为乱序数据流({len(row_tokens)}项对不齐{ncols}列)，"
+                              f"已按行首启发式重建{len(matrix)}行"
+                              f"{'(含'+str(ragged)+'行缺值)' if ragged else ''}，建议核对数值归属")
             else:
                 row_tokens = [t for t in row_tokens if t not in polluted]
                 issues.append(f"rows含{len(polluted)}项数据污染，已从rows剔除")
         elif all("|" in r or "｜" in r for r in data_rows) and len(data_rows) >= 2:
             # data为多列结构 → rows应等于每行首格；从data重建行名
             first_cells = [re.split(r"[|｜]+", r)[0].strip() for r in data_rows]
-            if first_cells and all(not _POLLUTE_RE.match(c) for c in first_cells):
+            if any(c for c in first_cells) and all(
+                    not _POLLUTE_RE.match(c) for c in first_cells if c):
                 row_tokens = first_cells
                 issues.append(f"rows污染({len(polluted)}项)，已从data首格重建行名")
         else:
             row_tokens = [t for t in row_tokens if t not in polluted]
             issues.append(f"rows含{len(polluted)}项数据污染，已剔除")
+
+    # rows 自身构成完整矩阵 且 data 行名与之无关 → data 为幻觉冗余，忽略
+    ncols_h = len(headers)
+    if (ncols_h > 1 and not polluted and len(row_tokens) >= ncols_h * 2
+            and len(row_tokens) % ncols_h == 0 and data_tokens):
+        rows_names = [row_tokens[i * ncols_h] for i in range(len(row_tokens) // ncols_h)]
+        data_first = [re.split(r"[|｜]+", r.strip())[0].strip()
+                      for r in re.split(r"[;；]+", data_raw) if r.strip()]
+        if not (set(rows_names) & set(d for d in data_first if d)):
+            data_raw, data_tokens = "", []
+            issues.append(f"rows已构成{len(rows_names)}行×{ncols_h}列完整表，"
+                          f"data行名不匹配视为冗余已忽略")
 
     if row_tokens and data_tokens:
         ncols_data = max(len(headers) - 1, 1)
@@ -378,3 +438,243 @@ def render_report_text(report: dict) -> str:
     if fixes:
         parts.append("→ " + " ".join(fixes))
     return " ".join(parts)
+
+
+# ==================== 4. 跨章数值一致性守卫（全类型通用） ====================
+
+_CN_NUM = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7,
+           "八": 8, "九": 9, "十": 10, "十一": 11, "十二": 12}
+_CN_NUM_R = {v: k for k, v in _CN_NUM.items()}
+
+_UNIT_ALIAS = {"平方米": "m2", "m²": "m2", "㎡": "m2",
+               "米": "m", "kN/m²": "kN/m2", "kN/m2": "kN/m2", "kN/㎡": "kN/m2",
+               "kPa": "kPa", "天": "d", "日": "d",
+               "万元": "w", "万元人民币": "w", "亿元": "e", "元": "y"}
+
+# 各类型参数词典：(参数名, 匹配正则)  数值捕获组为1，单位捕获组为2(可无)
+_PARAM_DICT = [
+    # ---- 土木 ----
+    ("总建筑面积", r"总建筑面积(?:约|为|是|达到)?\s*([\d.,]+)\s*(?:m²|㎡|平方米)(?![/\d])"),
+    ("建筑总高度", r"建筑总高度(?:约|为|是|达到)?\s*([\d.,]+)\s*(?:m|米)(?![/\d])"),
+    ("标准层层高", r"标准层层高(?:约|为|是)?\s*([\d.,]+)\s*(?:m|米)(?![/\d])"),
+    ("地上层数", r"地上(?:共)?\s*([0-9一二三四五六七八九十]{1,3})\s*层"),
+    ("地下层数", r"地下(?:共)?\s*([0-9一二三四五六七八九十]{1,3})\s*层"),
+    ("地基承载力", r"地基承载力(?:特征值)?(?:约|为|是|修正后取为)?\s*([\d.,]+)\s*kPa"),
+    ("基本风压", r"基本风压(?:约|为|是)?\s*([\d.,]+)\s*kN/m[²2㎡]"),
+    ("基本雪压", r"基本雪压(?:约|为|是)?\s*([\d.,]+)\s*kN/m[²2㎡]"),
+    ("抗震设防烈度", r"抗震设防烈度(?:约|为|是)?\s*([0-9一二三四五六七八九十]{1,2})\s*度"),
+    ("设计使用年限", r"设计使用年限(?:约|为|是)?\s*([\d.,]+)\s*年"),
+    ("总工期", r"(?:施工总工期|总工期)(?:约|为|是|控制在)?\s*([\d.,]+)\s*(?:天|日)"),
+    # ---- 机械 ----
+    ("夹紧力", r"(?:实际)?夹紧力(?:约|为|是|达到)?\s*([\d.,]+)\s*(?:N|kN|牛)(?![/\dA-Za-z])"),
+    ("主轴转速", r"主轴转速(?:约|为|是)?\s*([\d.,]+)\s*r/min"),
+    ("电机功率", r"电机(?:额定)?功率(?:约|为|是)?\s*([\d.,]+)\s*kW"),
+    # ---- 设计 ----
+    ("衣长", r"衣长(?:约|为|是)?\s*([\d.,]+)\s*cm"),
+    ("胸围", r"胸围(?:约|为|是)?\s*([\d.,]+)\s*cm"),
+    # ---- 管理/通用 ----
+    ("营业收入", r"营业收入(?:额)?(?:约|为|是|达到)?\s*([\d.,]+)\s*(万元|亿元|元)(?![/\d])"),
+    ("净利润", r"净利润(?:约|为|是|达到)?\s*([\d.,]+)\s*(万元|亿元|元)(?![/\d])"),
+    ("利润总额", r"利润总额(?:约|为|是|达到)?\s*([\d.,]+)\s*(万元|亿元|元)(?![/\d])"),
+    ("总资产", r"总资产(?:约|为|是|达到)?\s*([\d.,]+)\s*(万元|亿元|元)(?![/\d])"),
+    ("资产负债率", r"资产负债率(?:约|为|是|达到)?\s*([\d.,]+)\s*%?(?![/\d])"),
+    ("员工人数", r"(?:员工|职工)(?:总)?(?:人数|总数|人数为|规模)?(?:约|共|为|是|达到)?\s*([\d.,]+)\s*(?:人|名)(?![/\d])"),
+    ("注册资本", r"注册资本(?:约|为|是)?\s*([\d.,]+)\s*(万元|亿元|元)(?![/\d])"),
+    # ---- 通用后缀（兜底，要求带单位降低误报）----
+    ("通用面积", r"([\u4e00-\u9fa5]{2,10}面积)(?:约|为|是|达到)?\s*([\d.,]+)\s*(?:m²|㎡|平方米)(?![/\d])"),
+    ("通用高度", r"([\u4e00-\u9fa5]{2,10}高度)(?:约|为|是|达到)?\s*([\d.,]+)\s*(?:m|米)(?![/\d])"),
+]
+
+# 时间/语境限定词：带这些前缀的数值属于特定语境，不参与跨章冲突
+_QUALIFIER_RE = re.compile(
+    r"(\d{4}年|20\d\d[-—~至]20?\d{0,2}年?|近[一二三]年|去年|今年|上年|同期|"
+    r"优化后|改善后|实施后|改造后|调整后|方案[ABab一二二2]|改进前|改进后|"
+    r"行业平均|平均水平|标杆|对标|目标值?|预计|计划|理想|参考)(?:的)?$")
+
+# 变动动词：紧邻数值出现说明是变化量，排除自动修正
+_DIRECTION_RE = re.compile(
+    r"(降至|降为|降至约|升到|升至|升为|增至|减至|回落至|突破|下降到|上升到|"
+    r"提高了?|降低了?|增长了?|减少了?|下降了?|上升了?|增幅|降幅)")
+
+
+def _parse_num(s: str):
+    s = s.replace(",", "").rstrip(".")
+    if s in _CN_NUM:
+        return float(_CN_NUM[s])
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _unit_key(u: str) -> str:
+    return _UNIT_ALIAS.get(u, u)
+
+
+def _unit_convert(value: float, unit: str):
+    """金额单位归一到元，便于跨单位比较；其他单位返回原值"""
+    if unit == "亿元":
+        return value * 1e8, "y"
+    if unit == "万元":
+        return value * 1e4, "y"
+    if unit == "元":
+        return value, "y"
+    return value, _unit_key(unit)
+
+
+def _to_cn_or_arabic(orig_raw: str, new_value: float) -> str:
+    """替换时保持原有数字风格（中文数字/阿拉伯）"""
+    stripped = orig_raw.strip()
+    if stripped and stripped[0] in _CN_NUM:
+        iv = int(new_value)
+        return _CN_NUM_R.get(iv, str(iv))
+    fmt = f"{new_value:g}"
+    return fmt
+
+
+def check_numeric_consistency(text: str, title: str = "", auto_fix: bool = True):
+    """跨章数值一致性检查与修正。
+    规则:
+      1. 标题事实优先（标题中的层数等与正文冲突 → 正文改为标题值）
+      2. 同名同语境参数出现多个值 → 多数值投票（≥2次）修正少数派
+      3. 带时间/变动语境的数值不参与修正，仅参与报告
+    返回 (修正后文本, report) — report为None表示无任何发现"""
+    if not text:
+        return text, None
+
+    # ---- 标题事实提取 ----
+    title_facts = {}
+    if title:
+        m = re.search(r"([一二三四五六七八九十\d]{1,3})层", title)
+        if m:
+            v = _parse_num(m.group(1))
+            if v:
+                title_facts["地上层数"] = v
+
+    # ---- 扫描全文出现 ----
+    occurrences = []  # {name, qualifier, value, unit, span, raw, ch}
+    chapter_marks = [(m.start(), m.group(1)) for m in re.finditer(r"第([一二三四五六七八九十\d]+)章", text)]
+    for pname, pat in _PARAM_DICT:
+        for m in re.finditer(pat, text):
+            if pname.startswith("通用"):
+                # 通用后缀模式：名称组1、数值组2，单位按类型给默认
+                raw_val = m.group(2)
+                unit = "平方米" if pname == "通用面积" else "米"
+                name = m.group(1)
+                val_span = m.start(2), m.end(2)
+                name_start = m.start(1)
+            else:
+                raw_val = m.group(1)
+                unit = (m.group(2) if (m.lastindex or 1) >= 2 and m.group(2) else "")
+                name = pname
+                val_span = m.start(1), m.end(1)
+                name_start = m.start(0)
+            if not raw_val:
+                continue
+            v = _parse_num(raw_val)
+            if v is None:
+                continue
+            # 前缀语境限定词
+            lookback = text[max(0, name_start - 10):name_start]
+            qm = _QUALIFIER_RE.search(lookback)
+            qualifier = qm.group(1) if qm else ""
+            # 变动动词（名称前或数值前6字符内）
+            window = text[max(0, m.start() - 4):m.end()]
+            direction = bool(_DIRECTION_RE.search(window))
+            ch = ""
+            for pos, cnum in chapter_marks:
+                if pos <= m.start():
+                    ch = cnum
+            # 去重：同一位置被词典+通用模式双重匹配时，只保留先到的（词典优先）
+            if any(not (val_span[1] <= o["span"][0] or val_span[0] >= o["span"][1])
+                   for o in occurrences):
+                continue
+            occurrences.append(dict(name=name, qualifier=qualifier, value=v,
+                                    unit=unit, span=val_span, raw=raw_val,
+                                    chapter=ch, direction=direction,
+                                    full=m.group(0)))
+    if not occurrences:
+        return text, None
+
+    # ---- 分组找冲突 ----
+    groups = {}
+    for occ in occurrences:
+        if occ["direction"]:
+            continue  # 变动值不参与冲突判定
+        key = (occ["name"], occ["qualifier"])
+        groups.setdefault(key, []).append(occ)
+
+    conflicts, fixes = [], []
+    for (name, qualifier), occs in groups.items():
+        by_val = {}
+        for o in occs:
+            cv, cu = _unit_convert(o["value"], o["unit"])
+            by_val.setdefault((round(cv, 4), cu), []).append(o)
+        if len(by_val) <= 1:
+            continue
+        vals_str = " vs ".join(
+            f"{v[0]:g}{v[1]}×{len(oo)}" for v, oo in by_val.items())
+        conflict = {"name": name, "qualifier": qualifier, "values": vals_str,
+                    "chapters": sorted(set(o["chapter"] for o in occs))}
+        # ---- 修正决策 ----
+        if not auto_fix:
+            conflicts.append(conflict)
+            continue
+        target_val = None
+        if name in title_facts and qualifier == "":
+            tv, tu = _unit_convert(title_facts[name], "")
+            if (round(tv, 4), tu) in by_val:
+                target_val = (round(tv, 4), tu)
+                conflict["rule"] = "标题事实优先"
+        if target_val is None and len(by_val) == 2 and qualifier == "":
+            # 多数值投票：出现≥2次的值胜出
+            for v, oo in by_val.items():
+                if len(oo) >= 2:
+                    others = [x for vv, xx in by_val.items() if vv != v for x in xx]
+                    if all(len(by_val[(vv2)]) < 2 for vv2 in by_val if vv2 != v):
+                        target_val = v
+                        conflict["rule"] = f"多数值投票({len(oo)}次胜出)"
+                    break
+        if target_val is not None:
+            nfixed = 0
+            for v, oo in by_val.items():
+                if v == target_val:
+                    continue
+                for o in oo:
+                    tv_num = target_val[0]
+                    # 还原到原单位
+                    if o["unit"] in ("亿元",) and target_val[1] == "y":
+                        tv_num = tv_num / 1e8
+                    elif o["unit"] in ("万元",) and target_val[1] == "y":
+                        tv_num = tv_num / 1e4
+                    repl = _to_cn_or_arabic(o["raw"], tv_num)
+                    fixes.append((o["span"][0], o["span"][1], repl,
+                                  f"{name}: {o['raw']}→{repl}"))
+                    nfixed += 1
+            conflict["fixed"] = nfixed
+        conflicts.append(conflict)
+
+    if not conflicts:
+        return text, {"conflicts": [], "fixed_count": 0, "title_facts": title_facts,
+                      "params_scanned": len(groups)}
+
+    # ---- 应用修正（从后往前） ----
+    for start, end, repl, why in sorted(fixes, key=lambda x: -x[0]):
+        text = text[:start] + repl + text[end:]
+        print(f"  [一致性守卫] {why}")
+
+    report = {"conflicts": conflicts,
+              "fixed_count": len(fixes),
+              "title_facts": title_facts,
+              "params_scanned": len(groups)}
+    return text, report
+
+
+def consistency_summary(report: dict) -> str:
+    if not report:
+        return ""
+    n = len(report.get("conflicts", []))
+    f = report.get("fixed_count", 0)
+    if not n:
+        return ""
+    return f"一致性守卫: 扫描{report.get('params_scanned', 0)}项参数, 冲突{n}, 自动修正{f}"
