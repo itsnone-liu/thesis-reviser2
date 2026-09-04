@@ -34,7 +34,8 @@ except Exception:
 
 # ==================== 配置 ====================
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
-DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
+DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 IMAGE_API_KEY = os.getenv("IMAGE_API_KEY", "")
 IMAGE_API_URL = os.getenv("IMAGE_API_URL", "https://aihubmix.com/v1/images/generations")
 IMAGE_MODEL = "gpt-image-2"
@@ -88,7 +89,7 @@ def call_llm(prompt: str, max_tokens: int = 4096, retry: int = 3) -> str:
         raise RuntimeError("DEEPSEEK_API_KEY is not set")
     headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
     data = {
-        "model": "deepseek-chat",
+        "model": DEEPSEEK_MODEL,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.7,
         "max_tokens": max_tokens
