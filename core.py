@@ -30,6 +30,13 @@ try:
     from mechanical_cad import generate_engineering_png, freecad_available
 except Exception:
     generate_engineering_png = None
+
+# 确定性标签守卫（渲染前校验/修复/降级，无LLM）
+try:
+    from tagguard import audit_and_repair, render_report_text
+except Exception:
+    audit_and_repair = None
+    render_report_text = None
     freecad_available = lambda: False
 
 # ==================== 配置 ====================
@@ -84,24 +91,49 @@ system_lock = threading.Lock()
 
 # ==================== LLM 调用 ====================
 def call_llm(prompt: str, max_tokens: int = 4096, retry: int = 3) -> str:
-    """调用 DeepSeek API，重试 retry 次"""
+    """调用 DeepSeek API，重试 retry 次
+    - 默认附加 enable_thinking=false（推理模型如 deepseek-v4-flash 若开着思考，
+      会先耗尽 max_tokens 导致正文为空）；设置 DEEPSEEK_EXTRA_JSON 可覆盖附加参数
+    - 200但正文为空（思考耗尽tokens）→ 升高 max_tokens 重试"""
     if not DEEPSEEK_API_KEY:
         raise RuntimeError("DEEPSEEK_API_KEY is not set")
     headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
+    try:
+        extra_params = json.loads(os.getenv("DEEPSEEK_EXTRA_JSON", '{"enable_thinking": false}'))
+    except Exception:
+        extra_params = {}
     data = {
         "model": DEEPSEEK_MODEL,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.7,
         "max_tokens": max_tokens
     }
+    if isinstance(extra_params, dict):
+        data.update(extra_params)
+    cur_max_tokens = max_tokens
     for attempt in range(retry):
         try:
+            data["max_tokens"] = cur_max_tokens
             resp = requests.post(
                 f"{DEEPSEEK_BASE_URL}/chat/completions",
                 headers=headers, json=data, timeout=180
             )
             if resp.status_code == 200:
-                return resp.json()["choices"][0]["message"]["content"].strip()
+                content = (resp.json().get("choices") or [{}])[0].get("message", {}).get("content") or ""
+                content = content.strip()
+                if content:
+                    return content
+                # 正文为空：多为推理模型思考耗尽tokens → 升高max_tokens重试
+                cur_max_tokens = min(int(cur_max_tokens * 1.8) + 1000, 16000)
+                print(f"LLM返回空正文(尝试{attempt+1}/{retry})，升至max_tokens={cur_max_tokens}重试")
+                if attempt < retry - 1:
+                    time.sleep(2)
+            elif resp.status_code == 400 and extra_params and "enable_thinking" in resp.text:
+                # 该端点不支持 enable_thinking 参数 → 去掉附加参数重试
+                for k in extra_params:
+                    data.pop(k, None)
+                extra_params = {}
+                print(f"端点不支持enable_thinking，已移除附加参数(尝试{attempt+1}/{retry})")
             else:
                 print(f"LLM调用失败(尝试{attempt+1}/{retry}): {resp.status_code} {resp.text[:200]}")
                 if attempt < retry - 1:
@@ -1436,6 +1468,85 @@ def chart_to_bytes(ct: dict, colors=None) -> bytes:
     fig.savefig(buf, format='png', dpi=200, bbox_inches='tight')
     plt.close(fig)
     return buf.getvalue()
+
+
+def _make_placeholder_image(title: str, note: str = "原图生成失败·占位待补",
+                            width: int = 1200, height: int = 800) -> str:
+    """生成占位图（PIL本地渲染，无网络依赖），返回临时文件路径。"""
+    import tempfile
+    img = Image.new("RGB", (width, height), color=(245, 245, 245))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([8, 8, width - 8, height - 8], outline=(180, 180, 180), width=4)
+    try:
+        font_big = _load_font(34, bold=True)
+        font_small = _load_font(26)
+    except Exception:
+        font_big = font_small = None
+    text = (title or "").strip() or "（未命名）"
+    def _center(y, s, font, fill):
+        if font:
+            tw = draw.textlength(s, font=font)
+            draw.text(((width - tw) / 2, y), s, font=font, fill=fill)
+        else:
+            draw.text((width / 3, y), s, fill=fill)
+    _center(height * 0.40, text, font_big, (90, 90, 90))
+    _center(height * 0.52, note, font_small, (150, 150, 150))
+    fd, path = tempfile.mkstemp(suffix=".png", prefix="placeholder_")
+    os.close(fd)
+    img.save(path)
+    return path
+
+
+def _lookup_drawing_image(drawing: dict, drawing_images: dict) -> Optional[str]:
+    """统一图片key查找：兼容 seq/id/int化 等多种约定，避免图被静默丢弃。"""
+    if not drawing_images:
+        return None
+    raw_keys = []
+    for k in (drawing.get("seq"), drawing.get("id")):
+        if k is not None and str(k).strip():
+            raw_keys.append(str(k))
+    # 归一化映射：数字key转int字符串
+    norm_map = {}
+    for k, v in drawing_images.items():
+        ks = str(k)
+        norm_map[ks] = v
+        try:
+            norm_map[str(int(float(ks)))] = v
+        except (ValueError, TypeError):
+            pass
+    for key in raw_keys:
+        if key in norm_map and os.path.exists(str(norm_map[key])):
+            return str(norm_map[key])
+        try:
+            if str(int(float(key))) in norm_map:
+                p = str(norm_map[str(int(float(key)))])
+                if os.path.exists(p):
+                    return p
+        except (ValueError, TypeError):
+            pass
+    return None
+
+
+def add_c_placeholder(doc, ct: dict, cn: int, reason: str = ""):
+    """图表渲染失败时的占位输出（保持图注结构完整，问题可见）"""
+    title = ct.get("title", f"图{cn}")
+    p_title = doc.add_paragraph()
+    p_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    r = p_title.add_run(title)
+    set_run_font(r, "宋体", 10, bold=True)
+    note = "图表数据异常（渲染失败占位）" + (f"：{reason[:60]}" if reason else "")
+    path = _make_placeholder_image(title, note, width=1000, height=500)
+    try:
+        doc.add_picture(path, width=Cm(14))
+    except Exception as e:
+        print(f"添加图表占位失败: {e}")
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    last_p = doc.add_paragraph()
+    last_p.paragraph_format.space_after = Pt(6)
 
 
 def add_c(doc, ct: dict, chart_bytes: bytes, cn: int):
@@ -2829,6 +2940,17 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
         full_text = strip_title_from_txt(full_text)
     # 预处理：吸收跨行属性、包裹裸属性行（兼容GPT输出格式变体）
     full_text = preprocess_tag_attrs(full_text)
+    # 标签守卫：确定性校验/修复/降级（错拼、闭合、数量对齐、rows污染等）
+    guard_report = None
+    if audit_and_repair is not None:
+        try:
+            full_text, guard_report = audit_and_repair(full_text)
+            summary = render_report_text(guard_report) if render_report_text else ""
+            if summary:
+                print(f"  [{summary}]")
+                update("标签守卫: " + summary, 35)
+        except Exception as e:
+            print(f"标签守卫异常(跳过): {e}")
 
     update("正在提取标签数据...", 30)
     # 使用宽容解析器（支持多种标签格式变体）
@@ -2872,30 +2994,84 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
     pt_last_heading = ""
     seen_toc_refs = False  # 是否已经在TOC中看到"参考文献"（用于无PAGE_BREAK过渡检测）
 
+    receipt = {
+        "charts": {"total": 0, "ok": 0, "placeholder": 0, "failed": []},
+        "tables": {"total": 0, "ok": 0, "fallback": 0, "failed": []},
+        "drawings": {"total": 0, "ok": 0, "placeholder": 0, "missing_image": []},
+        "guard": None,
+    }
+    if isinstance(guard_report, dict):
+        receipt["guard"] = {
+            "scanned": dict(guard_report.get("scanned", {})),
+            "fixed": dict(guard_report.get("fixed", {})),
+        }
+
     for pt, ct in parts:
         if pt == "chart":
             cn += 1
+            receipt["charts"]["total"] += 1
             try:
-                add_c(doc, ct, chart_to_bytes(ct), cn)
+                cb = chart_to_bytes(ct)
+                if not cb:
+                    raise ValueError("图表渲染返回空(gantt/数据格式不符等)")
+                add_c(doc, ct, cb, cn)
+                receipt["charts"]["ok"] += 1
             except Exception as e:
                 print(f"生成图表失败: {e}")
+                receipt["charts"]["failed"].append(
+                    {"title": ct.get("title", ""), "error": str(e)[:150]})
+                try:
+                    add_c_placeholder(doc, ct, cn, str(e))
+                    receipt["charts"]["placeholder"] += 1
+                except Exception as e2:
+                    print(f"图表占位也失败: {e2}")
         elif pt == "table":
             tn += 1
+            receipt["tables"]["total"] += 1
             try:
                 add_t(doc, ct, tn)
+                receipt["tables"]["ok"] += 1
             except Exception as e:
                 print(f"生成表格失败: {e}")
+                receipt["tables"]["failed"].append(
+                    {"title": ct.get("title", ""), "error": str(e)[:150]})
+                try:
+                    # 兜底：以原始token强行铺一张表，保结构可见
+                    fallback_ct = dict(ct)
+                    fallback_ct["header"] = ct.get("header", "") or "项目,内容"
+                    if not ct.get("data") and ct.get("rows"):
+                        fallback_ct["data"] = ct.get("rows", "")
+                        fallback_ct["rows"] = ""
+                    add_t(doc, fallback_ct, tn)
+                    receipt["tables"]["fallback"] += 1
+                except Exception as e2:
+                    print(f"表格兜底也失败: {e2}")
         elif pt == "drawing":
             dn += 1
+            receipt["drawings"]["total"] += 1
             try:
-                img_key = str(ct.get("seq") or ct.get("id") or "")
-                img_path = drawing_images.get(img_key) or drawing_images.get(ct.get("id"))
-                if img_path and os.path.exists(img_path):
+                img_path = _lookup_drawing_image(ct, drawing_images)
+                if img_path:
                     add_drawing_image(doc, ct, img_path, dn)
+                    receipt["drawings"]["ok"] += 1
                 else:
-                    print(f"图纸图片缺失 key={img_key}, 跳过")
+                    img_key = str(ct.get("seq") or ct.get("id") or "")
+                    print(f"图纸图片缺失 key={img_key}, 使用占位图")
+                    receipt["drawings"]["missing_image"].append(
+                        {"title": ct.get("title", ""), "key": img_key})
+                    ph = _make_placeholder_image(ct.get("title", f"设计图{dn}"))
+                    try:
+                        add_drawing_image(doc, ct, ph, dn)
+                        receipt["drawings"]["placeholder"] += 1
+                    finally:
+                        try:
+                            os.remove(ph)
+                        except OSError:
+                            pass
             except Exception as e:
                 print(f"插入图纸失败: {e}")
+                receipt["drawings"]["missing_image"].append(
+                    {"title": ct.get("title", ""), "error": str(e)[:150]})
         else:
             for raw_line in ct.split('\n'):
                 line = clean_text(raw_line).strip()
@@ -3060,4 +3236,26 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
     # 最终排版（分节符+页码+页脚）- 放到最后
     update("正在处理最终排版（分节符/页码/页脚）...", 95)
     finalize_docx(docx_path, update=lambda m, p: update(m, 95 + int(p * 0.05)))
+
+    # ===== 渲染回执：写JSON旁车文件 + 控制台摘要（失败可见，不再静默） =====
+    receipt["file"] = docx_path
+    try:
+        report_path = docx_path + ".report.json"
+        with open(report_path, "w", encoding="utf-8") as f:
+            json.dump(receipt, f, ensure_ascii=False, indent=1)
+        c_, t_, d_ = receipt["charts"], receipt["tables"], receipt["drawings"]
+        flags = []
+        if c_["failed"]:
+            flags.append(f"图表失败{len(c_['failed'])}")
+        if t_["failed"]:
+            flags.append(f"表格失败{len(t_['failed'])}")
+        if d_["missing_image"]:
+            flags.append(f"图纸缺图{len(d_['missing_image'])}")
+        status = "⚠️ " + " / ".join(flags) if flags else "✅ 全部渲染成功"
+        print(f"  [渲染回执] chart {c_['ok']}/{c_['total']} | table {t_['ok']}/{t_['total']}"
+              f" | drawing {d_['ok']}/{d_['total']} → {status}")
+        print(f"  [渲染回执] 已写入 {report_path}")
+    except Exception as e:
+        print(f"渲染回执写入失败: {e}")
+    return receipt
     update("DOCX生成完毕！", 100)

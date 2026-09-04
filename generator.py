@@ -1415,6 +1415,24 @@ def normalize_manage_markup(full_text: str) -> str:
 
 
 # ==================== 主要生成函数 ====================
+def _call_llm_checked(prompt: str, max_tokens: int, min_chars: int = 200,
+                      label: str = "章节"):
+    """带产出检查的LLM调用：空返回/过短且无终结标点 → 重试一次（防截断进论文）"""
+    content = ""
+    for attempt in range(2):
+        content = call_llm(prompt, max_tokens=max_tokens)
+        content = clean_text(content)
+        if len(content) >= min_chars:
+            return content
+        ends_ok = content and content[-1] in "。！？…”\"'.)]」』"
+        if attempt == 0:
+            hint = f"为空" if not content else f"仅{len(content)}字且未收尾" if not ends_ok else f"仅{len(content)}字"
+            print(f"  [产出检查] {label}{hint}，重试一次...")
+    if not content:
+        print(f"  [产出检查] {label}两次生成为空，保留空内容")
+    return content
+
+
 def generate(profile: dict, paper_type: str, update=None) -> str:
     """生成完整论文文本（含标签）"""
     if update is None:
@@ -1455,7 +1473,8 @@ def _generate_manage(profile: dict, update) -> str:
         pct = 5 + int((idx + 0.5) / total_chapters * 80)
         update(f"正在生成第{num}章 {name}...", pct)
         prompt = mg_chapter_prompt(name, num, profile)
-        content = call_llm(prompt, max_tokens=MG_WORD_LIMITS.get(name, 1000) * 2)
+        content = _call_llm_checked(prompt, max_tokens=MG_WORD_LIMITS.get(name, 1000) * 2,
+                                    label=f"管理·第{num}章{name}")
         content = clean_text(content)
         # 去除章节编号前缀
         content = re.sub(r'^第[一二三四五六\d]+章.*?\n', '', content).strip()
@@ -1526,7 +1545,8 @@ def _generate_design(profile: dict, update) -> str:
         pct = 10 + int((idx + 0.5) / total_ch * 75)
         update(f"正在生成第{num}章 {name}...", pct)
         prompt = dj_chapter_prompt(name, num, profile, outline)
-        content = call_llm(prompt, max_tokens=SJ_WORD_LIMITS.get(name, 1000) * 2)
+        content = _call_llm_checked(prompt, max_tokens=SJ_WORD_LIMITS.get(name, 1000) * 2,
+                                    label=f"设计·第{num}章{name}")
         content = clean_text(content)
         content = re.sub(r'^第[一二三四五六\d]+章.*?\n', '', content).strip()
         chapters_content.append((name, content))
@@ -1692,7 +1712,8 @@ def _generate_mechanical(profile: dict, update) -> str:
         pct = 12 + int((idx + 0.5) / total_ch * 72)
         update(f"正在生成第{num}章 {name}...", pct)
         prompt = mc_chapter_prompt(name, num, profile, outline, machine_spec)
-        content = call_llm(prompt, max_tokens=MC_WORD_LIMITS.get(name, 1000) * 3)
+        content = _call_llm_checked(prompt, max_tokens=MC_WORD_LIMITS.get(name, 1000) * 3,
+                                    label=f"机械·第{num}章{name}")
         content = clean_text(content)
         body, chapter_json = _extract_mech_chapter_output(content, name, num, machine_spec)
         body = _check_calculation_consistency(body, name, machine_spec, profile)
@@ -1760,7 +1781,8 @@ def _generate_civil(profile: dict, update) -> str:
         pct = 10 + int((idx + 0.5) / total_ch * 75)
         update(f"正在生成第{num}章 {name}...", pct)
         prompt = cv_chapter_prompt(name, num, profile, outline)
-        content = call_llm(prompt, max_tokens=CIV_WORD_LIMITS.get(name, 1000) * 2)
+        content = _call_llm_checked(prompt, max_tokens=CIV_WORD_LIMITS.get(name, 1000) * 2,
+                                    label=f"土木·第{num}章{name}")
         content = clean_text(content)
         content = re.sub(r'^第[一二三四五六\d]+章.*?\n', '', content).strip()
         content = normalize_civil_markup(content)
