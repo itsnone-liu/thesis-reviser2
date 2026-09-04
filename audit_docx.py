@@ -44,7 +44,7 @@ def audit_pair(txt_path: str, docx_path: str) -> dict:
         "docx": os.path.basename(docx_path),
         "charts_in_txt": 0, "tables_in_txt": 0, "drawings_in_txt": 0,
         "images_in_docx": 0, "tables_in_docx": 0, "blank_images": 0,
-        "receipt": "", "verdict": "✅", "problems": "",
+        "receipt": "", "consistency": "", "verdict": "✅", "problems": "",
     }
     if not os.path.exists(docx_path):
         row["verdict"] = "❌"
@@ -81,6 +81,15 @@ def audit_pair(txt_path: str, docx_path: str) -> dict:
                 row["receipt"] = (f"chart {c_['ok']}/{c_['total']}"
                                   f" table {t_['ok']}/{t_['total']}"
                                   f" drawing {d_['ok']}/{d_['total']}")
+                cons = rc.get("consistency")
+                if cons and cons.get("conflicts"):
+                    row["consistency"] = "; ".join(
+                        f"{c['name']}:{c['values'][:40]}" for c in cons["conflicts"])
+                    unfixed = sum(1 for c in cons["conflicts"] if not c.get("fixed"))
+                    if unfixed:
+                        row["verdict"] = "❌" if row["verdict"] == "✅" else row["verdict"]
+                        row["problems"] = (row["problems"] + "; " if row["problems"] else "") + \
+                            f"数值冲突未修{unfixed}"
             except Exception:
                 pass
 
