@@ -58,7 +58,7 @@ def render(txt_path: str, docx_path: str, paper_type: str = "管理",
         drawings = merge_mech_json_into_drawings(drawings, mech_blocks)
 
         if drawing_folder and os.path.isdir(drawing_folder):
-            # 从已有图片目录加载
+            # 从已有图片目录加载（断点续跑：只加载已生成的）
             update("正在加载设计图纸...", 8)
             for d in drawings:
                 # 尝试找匹配文件
@@ -74,6 +74,14 @@ def render(txt_path: str, docx_path: str, paper_type: str = "管理",
                             drawing_images[img_key] = os.path.join(drawing_folder, fname)
                             break
             update(f"已加载 {len(drawing_images)} 张设计图", 12)
+            # 补生缺失图纸：目录里没有的必须现场生成，绝不静默占位
+            missing = [d for d in drawings
+                       if str(d.get("seq") or d.get("id")) not in drawing_images]
+            if missing:
+                update(f"补生缺失图纸 {len(missing)} 张...", 13)
+                new_imgs = generate_all_images(missing, drawing_folder, max_workers=2)
+                drawing_images.update(new_imgs)
+                update(f"补生完成，共 {len(drawing_images)} 张设计图", 20)
         else:
             # 需要生成图片
             if drawings:

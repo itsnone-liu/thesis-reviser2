@@ -86,28 +86,55 @@ def _check_text_quality(text: str, warns: list, paper_type: str):
         elif not n_refs:
             warns.append("参考文献无[1][2]编号条目")
 
-    # 5) 百分比列合计（占比列合计应≈100，父行=100%的分组表除外）
-    for m in re.finditer(r'<table\b[^>]*header="([^"]*)"[^>]*data="([^"]*)"', text):
-        header, data = m.group(1), m.group(2) or ""
+    # 5) 百分比列合计（data列对齐存在两种惯例：含行名列/不含；
+    #    分组表按连续段每段≈100%判定，两种对齐任一合法即放行）
+    for m in re.finditer(r'<table\b[^>]*?header="([^"]*)"(?:[^>]*?rows="([^"]*)")?[^>]*?data="([^"]*)"', text):
+        header, rows_attr, data = m.group(1), m.group(2) or "", m.group(3) or ""
         headers = [h.strip() for h in header.split(',')]
-        pct_idx = [i for i, h in enumerate(headers) if '%' in h or '占比' in h or '比例' in h]
-        if not pct_idx or not data:
+        data_rows = [re.split(r'[|｜]+', r2) for r2 in re.split(r'[;；]+', data) if r2.strip()]
+        if not data or len(headers) < 2:
             continue
-        ci = pct_idx[0]
-        col_vals = []
-        for r2 in re.split(r'[;；]+', data):
-            cells = [c.strip() for c in re.split(r'[|｜]+', r2)]
-            if ci < len(cells):
-                mm = re.search(r'([\d.]+)', cells[ci])
-                if mm:
-                    v = float(mm.group(1))
-                    if v <= 100:
-                        col_vals.append(v)
-        if len(col_vals) >= 3:
-            s = sum(col_vals)
-            has_parent = any(v >= 99.5 for v in col_vals)
-            if abs(s - 100) > 8 and not has_parent:
-                warns.append(f"表\"{headers[ci][:8]}\"列合计{s:.0f}%≠100")
+
+        def _try_offset(offset):
+            """按data列偏移offset对齐header[offset:]，返回(列名, 列值)或None"""
+            eff = headers[offset:]
+            pct_idx = [i for i, h in enumerate(eff) if '%' in h or '占比' in h or '比例' in h]
+            if not pct_idx:
+                return None
+            ci = pct_idx[0]
+            vals = []
+            for cells in data_rows:
+                if ci < len(cells):
+                    mm = re.search(r'([\d.]+)', cells[ci])
+                    if mm and float(mm.group(1)) <= 100:
+                        vals.append(float(mm.group(1)))
+            if len(vals) < 3:
+                return None
+            return eff[ci], vals
+
+        def _groupable(vals):
+            n = len(vals)
+            ok = [False] * (n + 1)
+            ok[0] = True
+            for i in range(1, n + 1):
+                for j in range(i):
+                    if ok[j] and 90 <= sum(vals[j:i]) <= 110:
+                        ok[i] = True
+                        break
+            return ok[n]
+
+        tried = []   # (列名, 列值) 两种对齐都试
+        for offset in (0, 1):
+            r = _try_offset(offset)
+            if r:
+                tried.append(r)
+                if _groupable(r[1]):
+                    break
+        else:
+            # 两种对齐都无法按100%分组 → 报最接近的那次
+            if tried:
+                name, vals = tried[0]
+                warns.append(f"表\"{name[:8]}\"占比列无法按100%分组(合计{sum(vals):.0f}%)")
 
 
 def audit_pair(txt_path: str, docx_path: str, paper_type: str = "管理") -> dict:
