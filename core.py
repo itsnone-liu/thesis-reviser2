@@ -36,7 +36,7 @@ except Exception:
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
 IMAGE_API_KEY = os.getenv("IMAGE_API_KEY", "")
-IMAGE_API_URL = "https://api.allmhub.com/v1/images/generations"
+IMAGE_API_URL = os.getenv("IMAGE_API_URL", "https://aihubmix.com/v1/images/generations")
 IMAGE_MODEL = "gpt-image-2"
 COLORS = ["#5B9BD5", "#ED7D31", "#A5A5A5", "#FFC000", "#4472C4", "#70AD47", "#264478"]
 
