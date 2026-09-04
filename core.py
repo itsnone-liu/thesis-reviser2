@@ -34,12 +34,16 @@ except Exception:
 # 确定性标签守卫（渲染前校验/修复/降级，无LLM）
 try:
     from tagguard import (audit_and_repair, render_report_text,
-                          check_numeric_consistency, consistency_summary)
+                          check_numeric_consistency, consistency_summary,
+                          normalize_chart_type)
 except Exception:
     audit_and_repair = None
     render_report_text = None
     check_numeric_consistency = None
     consistency_summary = None
+
+    def normalize_chart_type(t):
+        return (t or "bar").strip().lower()
 
 # ==================== 配置 ====================
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
@@ -1226,7 +1230,7 @@ def chart_to_bytes(ct: dict, colors=None) -> bytes:
     if colors is None:
         colors = COLORS
     titles = [t.strip() for t in ct.get("x", "").split(",") if t.strip()]
-    chart_type = (ct.get("type", "bar") or "bar").strip().lower()
+    chart_type = normalize_chart_type(ct.get("type", "bar") or "bar")
     legend_text = ct.get("legend", "") or ""
     legend_labels = [t.strip() for t in legend_text.split(",") if t.strip()]
 
@@ -1450,6 +1454,15 @@ def chart_to_bytes(ct: dict, colors=None) -> bytes:
             print(f'    x值: {ct.get("x", "")}')
             print(f'    y值: {ct.get("y", "")}')
             return b""
+        # 未知类型兜底：按柱状图绘制，绝不输出"有标题没图形"的空图
+        print(f'  ⚠️ 图表"{title_text}"类型"{ct.get("type", "")}"未识别，按柱状图绘制')
+        for i, vals in enumerate(multi_vals):
+            bars = ax.bar([p + i * 0.8 / max(len(multi_vals), 1) for p in x_pos], vals,
+                          color=_bar_colors(i), width=0.6 / max(len(multi_vals), 1),
+                          label=legend_labels[i] if legend_labels else None)
+            for bar, v in zip(bars, vals):
+                ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + max_val * 0.01,
+                        f"{v:.1f}", ha='center', va='bottom', fontsize=9)
     ax.set_title(title_text, fontsize=14, fontweight='bold', pad=15)
     if chart_type != "pie":
         handles, labels = ax.get_legend_handles_labels()

@@ -129,11 +129,46 @@ def _parse_attrs(raw: str) -> dict:
 
 # ==================== 2. 各类型校验器 ====================
 
+# 图表类型别名（中文/常见写法 → 引擎识别名）。引擎只认 bar/line/pie/stacked/gantt/
+# table_format/structure/scatter/flow/tree/comparison/trend，其余类型会画出空图。
+CHART_TYPE_ALIAS = {
+    "柱状图": "bar", "柱形图": "bar", "条形图": "bar", "柱图": "bar", "直方图": "bar",
+    "折线图": "line", "线图": "line", "趋势图": "line", "曲线图": "line",
+    "饼图": "pie", "饼状图": "pie", "占比图": "pie", "圆形图": "pie",
+    "堆叠图": "stacked", "堆积图": "stacked", "堆叠柱状图": "stacked",
+    "甘特图": "gantt", "横道图": "gantt", "进度图": "gantt",
+    "表格图": "table_format", "文字表": "table_format", "表格": "table_format",
+    "结构图": "structure", "架构图": "structure", "组织图": "structure",
+    "流程图": "flow", "树图": "tree", "树状图": "tree",
+    "散点图": "scatter", "点图": "scatter",
+}
+_ENGINE_TYPES = {"bar", "line", "pie", "stacked", "gantt", "table_format",
+                 "structure", "scatter", "flow", "tree", "comparison", "trend"}
+
+
+def normalize_chart_type(t: str) -> str:
+    """图表类型归一化：中文别名/未知类型 → 引擎识别名（未知默认bar）"""
+    t = (t or "bar").strip().lower()
+    if t in _ENGINE_TYPES:
+        return t
+    if t in CHART_TYPE_ALIAS:
+        return CHART_TYPE_ALIAS[t]
+    # 大小写变体等
+    return "bar"
+
+
 def _validate_chart(attrs: dict, seq: int):
     issues, actions = [], []
     x_labels = _split_values(attrs.get("x", ""))
     y_raw = (attrs.get("y", "") or "").strip()
     chart_type = attrs.get("type", "bar") or "bar"
+    # 类型归一化（柱状图→bar 等；未知类型降级bar并记录）
+    norm_type = normalize_chart_type(chart_type)
+    if norm_type != chart_type.strip().lower():
+        known_alias = chart_type.strip().lower() in CHART_TYPE_ALIAS
+        issues.append(f"类型\"{chart_type}\"{'→别名' if known_alias else '不支持，降级'}为{norm_type}")
+        chart_type = norm_type
+        attrs = dict(attrs, type=norm_type)
     if not y_raw:
         return None, ["y属性为空，剔除"], "dropped"
     series = [_split_values(s) for s in re.split(r"[;；]", y_raw) if s.strip()]
