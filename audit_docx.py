@@ -98,7 +98,10 @@ def _check_text_quality(text: str, warns: list, paper_type: str):
         def _try_offset(offset):
             """按data列偏移offset对齐header[offset:]，返回(列名, 列值)或None"""
             eff = headers[offset:]
-            pct_idx = [i for i, h in enumerate(eff) if '%' in h or '占比' in h or '比例' in h]
+            # 变化率列(提升/增长/同比...)不是构成占比，其和不必=100，跳过
+            pct_idx = [i for i, h in enumerate(eff)
+                       if ('%' in h or '占比' in h or '比例' in h)
+                       and not re.search(r'提升|增长|同比|变化|降幅|涨幅|增速|增幅|提高|降低|下降|浮动|波动', h)]
             if not pct_idx:
                 return None
             ci = pct_idx[0]
