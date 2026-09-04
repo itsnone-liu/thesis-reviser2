@@ -1830,7 +1830,7 @@ HARD FAIL CONDITIONS:
 - The title is: {title}
 - Put large enough objects or line elements in the center and corners so the image does not look empty.
 """
-def _call_image_api(prompt_text: str, drawing: dict, save_dir: str, max_retries: int = 3) -> Optional[str]:
+def _call_image_api(prompt_text: str, drawing: dict, save_dir: str, max_retries: int = 6) -> Optional[str]:
     if not IMAGE_API_KEY:
         raise RuntimeError("IMAGE_API_KEY is not set")
     headers = {
@@ -1872,8 +1872,21 @@ def _call_image_api(prompt_text: str, drawing: dict, save_dir: str, max_retries:
                     print(f"  图片生成成功: {path}")
                     return path
             else:
-                print(f"  图片API失败(尝试{attempt+1}): {resp.status_code}")
-                time.sleep(2)
+                body = ""
+                try:
+                    body = resp.text[:120]
+                except Exception:
+                    pass
+                print(f"  图片API失败(尝试{attempt+1}): {resp.status_code} {body}")
+                if resp.status_code == 403:
+                    # 403=平台滚动限流/配额窗口: 立即重试必然连败,指数退避等窗口
+                    wait = min(30 * (attempt + 1), 120)
+                    print(f"    限流退避{wait}秒...")
+                    time.sleep(wait)
+                elif resp.status_code == 429:
+                    time.sleep(15 * (attempt + 1))
+                else:
+                    time.sleep(5)
         except Exception as e:
             print(f"  图片生成异常(尝试{attempt+1}): {e}")
             time.sleep(2)
