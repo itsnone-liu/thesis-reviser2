@@ -114,10 +114,11 @@ def run_one(st: dict, idx: int, total: int):
     kw_norm = norm_keywords(st["keywords_raw"])
     tag = f"[{idx+1}/{total} {st['name']}·{st['major']}·{ptype}]"
 
-    # 已完成且终审通过(无占位/缺图) → 跳过
+    # 已完成且终审通过(无占位/缺图/降级) → 跳过
     if os.path.exists(docx_path) and os.path.exists(txt_path):
         row = audit_pair(txt_path, docx_path, ptype)
-        if row["verdict"] == "✅" and "占位图" not in row["problems"] and "图缺" not in row["problems"]:
+        if (row["verdict"] == "✅" and "占位图" not in row["problems"]
+                and "图缺" not in row["problems"] and "降级" not in row["problems"]):
             print(f"{tag} 已完成，跳过 ({row['verdict']})", flush=True)
             return {"status": "done", "verdict": row["verdict"]}
 
@@ -209,9 +210,10 @@ def main():
         key = st["sid"]
         prev = state.get(key, {})
         probs = prev.get("problems", "") or ""
-        # 状态级跳过: done且无占位图/图缺问题(有则进run_one重渲染补图)
+        # 状态级跳过: done且无占位图/图缺/降级问题(有则进run_one重渲染修复)
         if not args.retry_failed and prev.get("status") == "done" \
-                and "占位图" not in probs and "图缺" not in probs:
+                and "占位图" not in probs and "图缺" not in probs \
+                and "降级" not in probs:
             done += 1
             continue
         attempts = 0

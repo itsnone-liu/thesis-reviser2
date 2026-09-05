@@ -202,7 +202,9 @@ def audit_pair(txt_path: str, docx_path: str, paper_type: str = "管理") -> dic
                                   f" table {t_['ok']}/{t_['total']}"
                                   f" drawing {d_['ok']}/{d_['total']}")
                 if c_["failed"] or t_["failed"]:
-                    warns.append(f"回执降级/失败chart{len(c_['failed'])}·table{len(t_['failed'])}")
+                    # 【护栏】降级=内容在DOCX中残缺, 不允许带病交付 → 阻断
+                    row["verdict"] = "❌"
+                    warns.append(f"回执降级/失败chart{len(c_['failed'])}·table{len(t_['failed'])}(阻断:内容残缺)")
                 if d_["missing_image"]:
                     warns.append(f"占位图{len(d_['missing_image'])}张")
                 cons = rc.get("consistency")

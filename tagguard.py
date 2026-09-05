@@ -305,6 +305,30 @@ def _validate_table(attrs: dict, seq: int):
         headers = ["项目", "内容"]
         issues.append("header缺失，按两列补齐")
 
+    # 【护栏】rows整表压扁识别: rows数恰为列数整数倍、首列像行名、其余格像数据，
+    # 且现有data不可用(行数不足压扁矩阵或单元格数错乱) → rows就是压平的整张表，
+    # 矩阵重建，混乱data丢弃。data可用时交给下方原有机制，避免误伤。
+    _nc0 = len(headers)
+    if (_nc0 > 1 and len(row_tokens) >= _nc0 * 2 and len(row_tokens) % _nc0 == 0
+            and data_raw):
+        _nr0 = len(row_tokens) // _nc0
+        _mat0 = [row_tokens[i * _nc0:(i + 1) * _nc0] for i in range(_nr0)]
+        _first0 = [r[0] for r in _mat0]
+        _rest0 = [c for r in _mat0 for c in r[1:]]
+        _dr0 = [r.strip() for r in re.split(r"[;；]+", data_raw) if r.strip()]
+        _cells0 = [len([c for c in re.split(r"[|｜]+", r) if c.strip()]) for r in _dr0]
+        _numish0 = sum(1 for c in _rest0
+                       if _POLLUTE_RE.match(c) or _YEAR_RE.match(c)
+                       or '%' in c or ':' in c or '—' in c)
+        _data_broken = (len(_dr0) < _nr0
+                        or sum(1 for c in _cells0 if c not in (_nc0, _nc0 - 1)) > len(_cells0) / 2)
+        if (len(set(_first0)) == len(_first0) and _numish0 >= len(_rest0) * 0.3
+                and _data_broken):
+            row_tokens = _first0
+            data_raw = ";".join("|".join(r[1:]) for r in _mat0)
+            data_tokens = [t.strip() for t in _SPLIT_RE.split(data_raw) if t.strip()]
+            issues.append(f"rows为压扁整表({_nr0}行×{_nc0}列)，已矩阵重建，残缺data已丢弃")
+
     # rows 污染：纯数字/年份/百分比出现在 rows
     polluted = [t for t in row_tokens if _POLLUTE_RE.match(t) or _YEAR_RE.match(t)]
     if polluted:
@@ -347,9 +371,11 @@ def _validate_table(attrs: dict, seq: int):
             issues.append(f"rows含{len(polluted)}项数据污染，已剔除")
 
     # rows 自身构成完整矩阵 且 data 行名与之无关 → data 为幻觉冗余，忽略
+    # 豁免: 行名数与data行数相等(合法配对表, 行名数恰为列数偶数倍时易误判)
     ncols_h = len(headers)
     if (ncols_h > 1 and not polluted and len(row_tokens) >= ncols_h * 2
-            and len(row_tokens) % ncols_h == 0 and data_tokens):
+            and len(row_tokens) % ncols_h == 0 and data_tokens
+            and len(row_tokens) != len([r for r in re.split(r"[;；]+", data_raw) if r.strip()])):
         rows_names = [row_tokens[i * ncols_h] for i in range(len(row_tokens) // ncols_h)]
         data_first = [re.split(r"[|｜]+", r.strip())[0].strip()
                       for r in re.split(r"[;；]+", data_raw) if r.strip()]
