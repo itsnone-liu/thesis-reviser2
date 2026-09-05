@@ -207,7 +207,11 @@ def main():
     for i in order:
         st = students[i]
         key = st["sid"]
-        if not args.retry_failed and state.get(key, {}).get("status") == "done":
+        prev = state.get(key, {})
+        probs = prev.get("problems", "") or ""
+        # 状态级跳过: done且无占位图/图缺问题(有则进run_one重渲染补图)
+        if not args.retry_failed and prev.get("status") == "done" \
+                and "占位图" not in probs and "图缺" not in probs:
             done += 1
             continue
         attempts = 0
