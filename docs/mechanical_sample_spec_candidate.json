@@ -1,0 +1,43 @@
+{
+  "status": "approved_by_article_priority",
+  "resolution_policy": "semantic_split_then_latest_detailed_calculation_section",
+  "part_name": "后钢板弹簧吊耳",
+  "functional_features": {
+    "ear_hole_diameter_mm": 32,
+    "ear_hole_center_distance_mm": 120,
+    "overall_size_mm": [180, 80, 25]
+  },
+  "process_datums": {
+    "datum_scheme": "一面两孔",
+    "process_hole_diameters_mm": [18, 12],
+    "locator_pin_diameters_mm": [18, 12],
+    "center_distance_mm": 120
+  },
+  "fixture": {
+    "body_material": "HT200",
+    "body_size_mm": [320, 200, 180],
+    "clamp_screw": "M12",
+    "clamp_force_required_N": 1200,
+    "clamp_force_design_N": 1500,
+    "clamp_force_capacity_N": 28200
+  },
+  "cutting_force": {
+    "Fc_N": 2328,
+    "Ff_N": 1304,
+    "Fp_N": 2049
+  },
+  "part_material": "40Cr",
+  "resolved_conflicts": [
+    "part_material",
+    "process_hole_diameter",
+    "locator_pin_diameter",
+    "process_hole_center_distance",
+    "clamp_force_capacity"
+  ],
+  "resolution_notes": {
+    "part_material": "采用第5章计算条件中的40Cr；35钢/45钢视为前文泛化描述",
+    "process_hole_diameter": "采用第5章定位误差计算明确给出的φ18与φ12；φ18.5视为早期方案",
+    "process_hole_center_distance": "采用全文主方案120mm；80mm视为图示误标",
+    "clamp_force_capacity": "保留4200N经验值与28200N理论能力为不同字段，设计夹紧力取1500N"
+  }
+}

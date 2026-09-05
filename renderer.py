@@ -79,7 +79,10 @@ def render(txt_path: str, docx_path: str, paper_type: str = "管理",
                        if str(d.get("seq") or d.get("id")) not in drawing_images]
             if missing:
                 update(f"补生缺失图纸 {len(missing)} 张...", 13)
-                new_imgs = generate_all_images(missing, drawing_folder, max_workers=1)
+                new_imgs = generate_all_images(
+                    missing, drawing_folder, max_workers=1,
+                    source_text=full_text if paper_type in ("鏈烘", "mechanical", "mech", "mj") else "",
+                )
                 drawing_images.update(new_imgs)
                 update(f"补生完成，共 {len(drawing_images)} 张设计图", 20)
         else:
@@ -92,7 +95,10 @@ def render(txt_path: str, docx_path: str, paper_type: str = "管理",
                 if not drawing_folder and os.path.isdir(img_dir):
                     shutil.rmtree(img_dir, ignore_errors=True)
                 update(f"正在生成 {len(drawings)} 张设计图纸...", 15)
-                drawing_images = generate_all_images(drawings, img_dir, max_workers=1)
+                drawing_images = generate_all_images(
+                    drawings, img_dir, max_workers=1,
+                    source_text=full_text if paper_type in ("鏈烘", "mechanical", "mech", "mj") else "",
+                )
                 update(f"已生成 {len(drawing_images)} 张设计图", 20)
             else:
                 update("未发现设计图纸标签", 10)
