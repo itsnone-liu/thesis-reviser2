@@ -3213,7 +3213,9 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
                 if in_toc_section:
                     if line.startswith('第') and '章' in line:
                         _toc_entries.append(('chapter', line))
-                    elif re.match(r'^\d+\.\d+\s+', line):
+                    elif re.match(r'^\d+\.\d+(\.\d+)?\s+', line):
+                        # 二级(N.1)与三级(N.1.1)目录条目都收集; 三级行此前掉入
+                        # else分支→目录收集中断+该行被丢弃(每章首条三级必丢)
                         _toc_entries.append(('subsection', line))
                     elif re.match(r'^参考文献\s*$', line):
                         _toc_entries.append(('ref', line))
