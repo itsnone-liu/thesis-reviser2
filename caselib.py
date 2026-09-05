@@ -48,17 +48,25 @@ def validate_case(case: dict) -> list:
         probs.append("未标记verified(要素未核对)")
     return probs
 
-def check_consistency(text: str, cases: list, source_words=("裁判文书网", "指导案例", "公报", "典型案例", "北大法宝")) -> list:
-    """生成文本 vs 案例素材一致性"""
+def check_consistency(text: str, cases: list, source_words=("裁判文书网", "指导性案例", "指导案例", "公报", "典型案例", "北大法宝")) -> list:
+    """生成文本(全篇) vs 案例素材一致性: 案号出现 + 特征词覆盖 + 来源标注"""
     probs = []
     for c in cases:
-        no = c.get("案号", "")
-        if no and no not in text and "指导案例" not in str(c.get("来源", "")):
-            probs.append(f"[{c.get('名称','?')}] 案号未在正文出现")
-        for key_fact in re.split(r"[。;；]", str(c.get("基本事实", "")))[:3]:
-            core = re.sub(r"[的了与及或在对于向从中被是]", "", key_fact)[:18]
-            if len(core) >= 8 and core not in re.sub(r"[的了与及或在对于向从中被是]", "", text):
-                probs.append(f"[{c.get('名称','?')}] 关键事实疑似缺失: {key_fact[:24]}…")
+        no = str(c.get("案号", ""))
+        nm = str(c.get("名称", ""))
+        if no and no not in text:
+            # 名称主体也认可(指导案例编号常以"第42批/237号"形式出现)
+            if not (nm and nm[:6] in text):
+                probs.append(f"[{nm[:12]}] 案号未在正文出现({no})")
+        # 特征词: 当事人名片段 + 案由核心词
+        tokens = [nm[2:6]] if len(nm) >= 6 else []
+        for key in ("当事人", "案由"):
+            for m in re.findall(r"[\u4e00-\u9fa5]{2,6}", str(c.get(key, "")))[:4]:
+                tokens.append(m)
+        tokens = list(dict.fromkeys(tokens))[:6]
+        miss = [t for t in tokens if t not in text]
+        if len(miss) >= 3:
+            probs.append(f"[{nm[:12]}] 案例特征词大量缺失: {miss[:3]}")
     joined = "".join(str(c.get("来源", "")) for c in cases)
     if not any(w in text for w in source_words) and joined:
         probs.append("正文未标注任何案例来源词")
