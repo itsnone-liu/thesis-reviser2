@@ -46,6 +46,12 @@ except Exception:
     resolve_article_spec = None
 
 try:
+    from civil_consistency import gate_civil_drawing, format_civil_gate_report
+except Exception:
+    gate_civil_drawing = None
+    format_civil_gate_report = None
+
+try:
     from mechanical_figures import render_mechanical_figure
 except Exception:
     render_mechanical_figure = None
@@ -2688,10 +2694,12 @@ def generate_diagram_image(drawing: dict, save_dir: str) -> Optional[str]:
 
 
 def generate_all_images(drawings: list, save_dir: str, max_workers: int = 2,
-                        source_text: str = "", mechanical_spec: dict | None = None) -> dict:
+                        source_text: str = "", mechanical_spec: dict | None = None,
+                        civil_spec: dict | None = None) -> dict:
     """并发生成所有图纸图片，返回 {seq: local_path}。
     注意：只给没有seq的drawing分配序号——补图场景传入的是缺失子集，
     若无条件重编号1..N会导致文件名与原seq错位、覆盖已有图。"""
+    source_text = source_text or os.environ.get("THESIS_SOURCE_TEXT", "")
     if gate_mechanical_drawing is not None and source_text:
         mechanicalish = any(any(k in str(d).lower() for k in ("夹具", "定位", "装配", "零件", "铣削", "机械")) for d in drawings)
         if mechanicalish:
@@ -2700,6 +2708,18 @@ def generate_all_images(drawings: list, save_dir: str, max_workers: int = 2,
             gate = gate_mechanical_drawing(spec=mechanical_spec or {}, text=source_text)
             if not gate.get("ok"):
                 report = format_gate_report(gate) if format_gate_report else str(gate)
+            raise ValueError(report)
+    # Civil figures use the same pre-render policy: conflicting labelled
+    # values stop the whole batch, so no figure can silently embed stale data.
+    if gate_civil_drawing is not None and source_text:
+        civilish = any(
+            any(k in str(d).lower() for k in ("土木", "结构", "梁", "柱", "楼板", "抗震", "施工进度", "劳动力"))
+            for d in drawings
+        )
+        if civilish:
+            gate = gate_civil_drawing(spec=civil_spec or {}, text=source_text)
+            if not gate.get("ok"):
+                report = format_civil_gate_report(gate) if format_civil_gate_report else str(gate)
                 raise ValueError(report)
     result = {}
     os.makedirs(save_dir, exist_ok=True)
