@@ -48,6 +48,14 @@ from prompts.civil import (
     build_references_prompt as cv_ref_prompt,
     get_chapter_outline as cv_get_chapter_outline,
 )
+from law import LAW_T1_CHAPTERS, LAW_T2_CHAPTERS, ABSTRACT_RANGE
+from prompts.law import (
+    build_chapter_prompt as lw_chapter_prompt,
+    build_chapter_prompt_t2 as lw_chapter_prompt_t2,
+    build_abstract_prompt as lw_abstract_prompt,
+    build_keywords_prompt as lw_kw_prompt,
+    build_references as lw_build_refs,
+)
 
 
 _VALID_TABLE_TAG_RE = re.compile(
@@ -1448,6 +1456,8 @@ def generate(profile: dict, paper_type: str, update=None) -> str:
         return _generate_mechanical(profile, update)
     elif paper_type in ("土木", "civil", "cw"):
         return _generate_civil(profile, update)
+    elif paper_type in ("法学", "law", "fx"):
+        return _generate_law(profile, update)
     else:
         raise ValueError(f"不支持的论文类型: {paper_type}")
 
@@ -1912,3 +1922,93 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def _generate_law(profile: dict, update) -> str:
+    """生成法学类论文(评阅要求驱动: T1案例分析型/T2规范分析型)
+    profile: {"title", "law_type": "T1"|"T2", "case": {...}(T1), "cluster": [...](T2), "domain": str(T2)}
+    案情素材由profile携带(来自案例库), 生成全程素材注入+禁编令; 参考文献为确定性真实清单。"""
+    law_type = profile.get("law_type", "T1")
+    case = profile.get("case") or {}
+    cluster = profile.get("cluster") or ([case] if case else [])
+    title = profile.get("title", "")
+    if law_type == "T2":
+        chapters_tbl = LAW_T2_CHAPTERS
+    else:
+        chapters_tbl = LAW_T1_CHAPTERS
+
+    # 1. 摘要(带超长重写+句边界裁剪)
+    update("正在生成摘要...", 5)
+    abstract = clean_text(call_llm(lw_abstract_prompt(title, case) if law_type == "T1"
+                                   else lw_abstract_prompt(title, cluster[0] if cluster else {}), max_tokens=900))
+    abstract = re.sub(r'^\*\*摘要\*\*|^摘要[：:\s]*', '', abstract.strip()).strip()
+    n_abs = len(re.sub(r'\s', '', abstract))
+    if not (ABSTRACT_RANGE[0] <= n_abs <= ABSTRACT_RANGE[1]):
+        abstract = clean_text(call_llm(
+            (lw_abstract_prompt(title, case if law_type == "T1" else (cluster[0] if cluster else {})))
+            + "\n\n注意: 上次输出字数不合要求, 本次严格控制在450字左右, 宁精勿滥。", max_tokens=800))
+        abstract = re.sub(r'^\*\*摘要\*\*|^摘要[：:\s]*', '', abstract.strip()).strip()
+        n_abs = len(re.sub(r'\s', '', abstract))
+        if n_abs > ABSTRACT_RANGE[1]:   # 句边界确定性裁剪
+            cut, last = abstract[:ABSTRACT_RANGE[1]], -1
+            for mm in re.finditer(r'[。！？]', cut):
+                last = mm.end()
+            abstract = (cut[:last] if last > ABSTRACT_RANGE[0] else cut).strip()
+    update(f"摘要{len(re.sub(chr(92)+'s','',abstract))}字", 8)
+
+    # 2. 关键词
+    keywords = clean_text(call_llm(lw_kw_prompt(title, abstract), max_tokens=120)).strip()
+    keywords = re.sub(r'^关键词[：:\s]*', '', keywords).strip()
+
+    # 3. 逐章生成(素材注入)
+    chapters_content = []
+    total_ch = len(chapters_tbl)
+    prev = ""
+    for idx, (name, num, limit) in enumerate(chapters_tbl):
+        pct = 10 + int((idx + 0.5) / total_ch * 75)
+        update(f"正在生成第{num}章 {name}...", pct)
+        if law_type == "T2":
+            prompt = lw_chapter_prompt_t2(title, cluster, name, num, limit, prev)
+        else:
+            prompt = lw_chapter_prompt(title, case, name, num, limit, prev)
+        content = _call_llm_checked(prompt, max_tokens=max(4096, int(limit * 2.2)),
+                                    label=f"法学·第{num}章{name}")
+        content = clean_text(content)
+        content = re.sub(r'^第[一二三四五六\d]+章.*?\n', '', content).strip()
+        chapters_content.append((name, num, content))
+        prev = f"{name}: " + content[:800]
+
+    # 4. 参考文献(确定性真实清单)
+    update("正在组装参考文献...", 88)
+    refs = lw_build_refs(case if law_type == "T1" else (cluster[0] if cluster else {}))
+    if law_type == "T2":
+        for c in cluster[1:]:
+            no = str(c.get("案号", "")).replace("指导案例", "")
+            nm = str(c.get("名称", ""))
+            if no and nm:
+                refs.append(f"最高人民法院指导性案例{no}: {nm}.")
+
+    # 5. TOC(同经管: 章+二级+三级缩进)
+    toc_lines = []
+    for name, num, content in chapters_content:
+        toc_lines.append(f"第{num}章 {name}")
+        for line in content.split('\n'):
+            m3 = re.match(r'^(\d+\.\d+\.\d+)\s+(.+)', line.strip())
+            m2 = re.match(r'^(\d+\.\d+)\s+(.+)', line.strip())
+            if m2:
+                toc_lines.append(f"    {m2.group(1)} {m2.group(2)}")
+            elif m3:
+                toc_lines.append(f"        {m3.group(1)} {m3.group(2)}")
+    toc_lines.append("参考文献")
+
+    # 6. 合并(契约同经管)
+    txt = f"摘要\n{abstract}\n\n关键词\n{keywords}\n\n"
+    txt += "---PAGE_BREAK---\n目录\n" + "\n".join(toc_lines) + "\n\n"
+    txt += "---PAGE_BREAK---\n"
+    for name, num, content in chapters_content:
+        txt += f"第{num}章 {name}\n{content}\n\n"
+        txt += "---PAGE_BREAK---\n"
+    txt += "参考文献\n" + "\n".join(f"[{i}] {r}" for i, r in enumerate(refs, 1))
+    txt = _prepend_paper_title(txt, profile)
+    update("生成完成！", 100)
+    return txt
