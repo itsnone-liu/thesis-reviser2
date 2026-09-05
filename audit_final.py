@@ -52,18 +52,25 @@ def _pct_check(tbl, warn_prefix):
         return None
     headers = [h for h in tbl[0]]
     body = tbl[1:]
-    RATE = re.compile(r"提升|增长|同比|变化|降幅|涨幅|增速|增幅|提高|降低|下降|浮动|波动")
+    RATE = re.compile(r"提升|增长|同比|变化|降幅|涨幅|增速|增幅|提高|降低|下降|波动")
     for off in (0, 1):
         eff = headers[off:]
         # 仅构成语义表头(占比/构成/比重/份额)才要求和=100; 率类指标列(毛利率/达标率)是每行独立指标
+        # 年份列表头(如"2021年股权融资占比")是跨年时间序列, 不做构成检查
+        if any(re.search(r"\d{4}年", h) for i, h in enumerate(eff) if h and re.search(r"占比|构成|比重|份额", h)):
+            return None
         pct_idx = [i for i, h in enumerate(eff) if h
                    and re.search(r"占比|构成|比重|份额", h) and not RATE.search(h)]
         if not pct_idx:
             continue
-        if len(pct_idx) >= 2:  # 行向构成豁免
+        if len(pct_idx) >= 2:  # 行向构成豁免: 仅汇总占比语义列(如 原材料占比+在产品占比+产成品占比=100)
             n_rows = row_ok = 0
             for row in body:
-                vals = [float(m.group(1)) for c in row if (m := re.search(r"([\d.]+)", c or ""))]
+                vals = []
+                for c_i in pct_idx:
+                    if c_i < len(row):
+                        m = re.search(r"([\d.]+)", row[c_i] or "")
+                        if m: vals.append(float(m.group(1)))
                 if len(vals) >= 2:
                     n_rows += 1
                     if 90 <= sum(vals) <= 110:
