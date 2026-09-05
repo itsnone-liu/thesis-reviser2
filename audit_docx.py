@@ -104,6 +104,22 @@ def _check_text_quality(text: str, warns: list, paper_type: str):
                        and not re.search(r'提升|增长|同比|变化|降幅|涨幅|增速|增幅|提高|降低|下降|浮动|波动', h)]
             if not pct_idx:
                 return None
+            # 行向构成豁免：每行数值单元格合计≈100（如 高/中/低需求占比行向构成），
+            # 不依赖列对齐，直接按行内数值总和判定
+            if len(pct_idx) >= 2:
+                row_ok = n_rows = 0
+                for cells in data_rows:
+                    vals = []
+                    for c in cells:
+                        mm = re.search(r'([\d.]+)', c)
+                        if mm:
+                            vals.append(float(mm.group(1)))
+                    if len(vals) >= 2:
+                        n_rows += 1
+                        if 90 <= sum(vals) <= 110:
+                            row_ok += 1
+                if n_rows and row_ok >= n_rows * 0.8:
+                    return None
             ci = pct_idx[0]
             vals = []
             for cells in data_rows:

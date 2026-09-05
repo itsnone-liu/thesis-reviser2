@@ -577,7 +577,7 @@ _PARAM_DICT = [
 # 时间/语境限定词：带这些前缀的数值属于特定语境，不参与跨章冲突
 _QUALIFIER_RE = re.compile(
     r"(\d{4}年|20\d\d[-—~至]20?\d{0,2}年?|近[一二三]年|去年|今年|上年|同期|"
-    r"优化后|改善后|实施后|改造后|调整后|方案[ABab一二二2]|改进前|改进后|"
+    r"最小|最大|极限|额定|设计取|单件|单体|每间|优化后|改善后|实施后|改造后|调整后|方案[ABab一二二2]|改进前|改进后|"
     r"行业平均|平均水平|标杆|对标|目标值?|预计|计划|理想|参考)(?:的)?$")
 
 # 变动动词：紧邻数值出现说明是变化量，排除自动修正
@@ -724,12 +724,49 @@ def check_numeric_consistency(text: str, title: str = "", auto_fix: bool = True)
                         target_val = v
                         conflict["rule"] = f"多数值投票({len(oo)}次胜出)"
                     break
+        if target_val is None and qualifier == "":
+            # 层级3 强多数票：任意值数下，频次≥2且≥次高一倍（如 1500×8 vs 1200×4 vs 计算值×2）
+            ranked = sorted(by_val.items(), key=lambda kv: -len(kv[1]))
+            if len(ranked) >= 2 and len(ranked[0][1]) >= 2 and \
+                    len(ranked[0][1]) >= 2 * len(ranked[1][1]):
+                target_val = ranked[0][0]
+                conflict["rule"] = f"强多数投票({len(ranked[0][1])}次)"
+        if target_val is None and qualifier == "":
+            # 层级4 权威章节值：第1章(工程概况)定义值优先；仅摘要有区分值时其次
+            ch1_vals, abs_vals = set(), set()
+            for o in occs:
+                cv, cu = _unit_convert(o["value"], o["unit"])
+                k = (round(cv, 4), cu)
+                if o["chapter"] in ("一", "1"):
+                    ch1_vals.add(k)
+                elif o["chapter"] == "":
+                    abs_vals.add(k)
+            if len(ch1_vals) == 1:
+                av = next(iter(ch1_vals))
+                if av in by_val:
+                    target_val = av
+                    conflict["rule"] = "工程概况定义值"
+            elif len(ch1_vals | abs_vals) == 1:
+                av = next(iter(ch1_vals | abs_vals))
+                if av in by_val:
+                    target_val = av
+                    conflict["rule"] = "摘要定义值"
+        if target_val is None and qualifier == "":
+            # 层级5 首次出现优先（1×1平局的兜底：定义处通常在前）
+            first = min(occs, key=lambda o: o["span"][0])
+            cv, cu = _unit_convert(first["value"], first["unit"])
+            target_val = (round(cv, 4), cu)
+            conflict["rule"] = "首次出现优先"
         if target_val is not None:
             nfixed = 0
             for v, oo in by_val.items():
                 if v == target_val:
                     continue
                 for o in oo:
+                    # 计算语境豁免：所需/理论/校核等语境的数值是计算结果，不是参数陈述，不改
+                    ctx = text[max(0, o["span"][0] - 30):min(len(text), o["span"][1] + 15)]
+                    if re.search(r"计算|所需|要求|理论|校核|需要|应为|不得小于|大于等于", ctx):
+                        continue
                     tv_num = target_val[0]
                     # 还原到原单位
                     if o["unit"] in ("亿元",) and target_val[1] == "y":
