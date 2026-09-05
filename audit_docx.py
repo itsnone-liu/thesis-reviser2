@@ -48,13 +48,19 @@ def _check_text_quality(text: str, warns: list, paper_type: str):
     if literal_refs:
         warns.append(f"正文{len(literal_refs)}处未填编号的图/表占位引用")
 
-    # 2) 图号引用超出实际图数（"见图7"但全文只有5张图）
+    # 2) 图/表号引用超出实际数量（"见图7"但全文只有5张图; "见表20"但只有12个表）
     n_fig_total = len(re.findall(r'<drawing\b', text)) + len(re.findall(r'<chart\b', text))
     fig_refs = [int(m.group(1)) for m in re.finditer(r'[如见由]图(\d+)(?![-\d])', text)]
     if fig_refs and n_fig_total:
         over = sorted(set(r for r in fig_refs if r > n_fig_total))
         if over:
             warns.append(f"图号引用超界{over} vs 实际图数{n_fig_total}")
+    n_tab_total = len(re.findall(r'<table\b', text))
+    tab_refs = [int(m.group(1)) for m in re.finditer(r'[如见由]表(\d+)(?![-\d])', text)]
+    if tab_refs and n_tab_total:
+        over_t = sorted(set(r for r in tab_refs if r > n_tab_total))
+        if over_t:
+            warns.append(f"表号引用超界{over_t} vs 实际表数{n_tab_total}")
 
     # 3) 章节字数（先剔除目录区，避免目录条目被当章节体误报）
     body = text
@@ -63,6 +69,14 @@ def _check_text_quality(text: str, warns: list, paper_type: str):
         pb = body.find('---PAGE_BREAK---', m_toc.end())
         if pb >= 0:
             body = body[:m_toc.start()] + body[pb:]
+
+    # 2b) 重复章头（同一"第N章 标题"在正文中重复出现 → 旧版重复渲染缺陷特征）
+    #     注: 在剥掉目录区之后检查——目录/大纲区天然含全部章标题各一次
+    headings = re.findall(r'(?m)^(第[一二三四五六七八九十\d]+章[^\n。！？]{0,28})$', body)
+    seen_dup = {h for h in headings if headings.count(h) > 1}
+    if seen_dup:
+        warns.append(f"重复章头{len(seen_dup)}处({next(iter(seen_dup))[:14]}…)")
+
     parts = re.split(r'(?m)^(第[一二三四五六七八九十\d]+章[^\n。！？]{0,28})$', body)
     minw = _MIN_CHAPTER_WORDS.get(paper_type, 800)
     for i in range(1, len(parts) - 1, 2):
@@ -99,25 +113,30 @@ def _check_text_quality(text: str, warns: list, paper_type: str):
             """按data列偏移offset对齐header[offset:]，返回(列名, 列值)或None"""
             eff = headers[offset:]
             # 变化率列(提升/增长/同比...)不是构成占比，其和不必=100，跳过
+            # 注: "浮动"不属于变化率语义(固定/浮动薪酬是构成对), 不得排除
             pct_idx = [i for i, h in enumerate(eff)
                        if ('%' in h or '占比' in h or '比例' in h)
-                       and not re.search(r'提升|增长|同比|变化|降幅|涨幅|增速|增幅|提高|降低|下降|浮动|波动', h)]
+                       and not re.search(r'提升|增长|同比|变化|降幅|涨幅|增速|增幅|提高|降低|下降|波动', h)
+                       and not re.search(r'\d{4}年', h)]  # 年份列是时间序列, 非构成
             if not pct_idx:
                 return None
-            # 行向构成豁免：每行数值单元格合计≈100（如 高/中/低需求占比行向构成），
-            # 不依赖列对齐，直接按行内数值总和判定
+            # 行向构成豁免：占比语义列的行内合计≈100（如 固定占比+浮动占比=100），
+            # 【护栏】只汇总占比列本身——混入金额/天数等普通数值列会打乱构成判定;
+            # 数据行含/不含行名列两种惯例都试(shift 0/1), 0.9~1.1段捕获小数量纲(0.65+0.35=1)
             if len(pct_idx) >= 2:
                 row_ok = n_rows = 0
                 for cells in data_rows:
-                    vals = []
-                    for c in cells:
-                        mm = re.search(r'([\d.]+)', c)
-                        if mm:
-                            vals.append(float(mm.group(1)))
-                    if len(vals) >= 2:
-                        n_rows += 1
-                        if 90 <= sum(vals) <= 110:
+                    n_rows += 1
+                    for shift in (0, 1):
+                        vals = []
+                        for c_i in pct_idx:
+                            if c_i + shift < len(cells):
+                                mm = re.search(r'([\d.]+)', cells[c_i + shift])
+                                if mm:
+                                    vals.append(float(mm.group(1)))
+                        if len(vals) >= 2 and (90 <= sum(vals) <= 110 or 0.9 <= sum(vals) <= 1.1):
                             row_ok += 1
+                            break
                 if n_rows and row_ok >= n_rows * 0.8:
                     return None
             ci = pct_idx[0]
@@ -153,7 +172,17 @@ def _check_text_quality(text: str, warns: list, paper_type: str):
             # 两种对齐都无法按100%分组 → 报最接近的那次
             if tried:
                 name, vals = tried[0]
-                warns.append(f"表\"{name[:8]}\"占比列无法按100%分组(合计{sum(vals):.0f}%)")
+                hint = "，疑似小数比例(如0.65应作65%)" if sum(vals) < 5 else ""
+                warns.append(f"表\"{name[:8]}\"占比列无法按100%分组(合计{sum(vals):.0f}%){hint}")
+
+        # 【护栏】行名污染检测: rows属性中的行名被纯数字/百分数顶替
+        # (旧版压扁缺陷特征: 行名被上一行数据顶替, 如"8642"/"95"出现在类别列;
+        #  注意data行不含行名, 污染只可能出现在rows属性, 检查data首列必误报)
+        if rows_attr:
+            rnames = [r.strip() for r in re.split(r'[,，、|｜;；]', rows_attr) if r.strip()]
+            bad_names = [n for n in rnames if re.fullmatch(r'[\d.]+%?', n)]
+            if len(bad_names) >= 2:
+                warns.append(f"表\"{headers[0][:6]}\"行名疑似污染{len(bad_names)}行({bad_names[0][:8]}…)")
 
 
 def audit_pair(txt_path: str, docx_path: str, paper_type: str = "管理") -> dict:
@@ -186,9 +215,11 @@ def audit_pair(txt_path: str, docx_path: str, paper_type: str = "管理") -> dic
     with zipfile.ZipFile(docx_path) as z:
         names = z.namelist()
         media = [n for n in names if n.startswith("word/media/")]
-        row["images_in_docx"] = len(media)
         with z.open("word/document.xml") as f:
             docxml = f.read().decode("utf-8", errors="ignore")
+        # 【护栏】图片计数用body内嵌图(w:drawing/w:pict)而非media文件数:
+        # docx会用同一media部件渲染重复图片(内嵌8张/media仅6文件), 数文件必误报图缺
+        row["images_in_docx"] = docxml.count("</w:drawing>") + docxml.count("<w:pict")
         row["tables_in_docx"] = docxml.count("<w:tbl>")
 
         # 渲染回执（若有，直接引用其失败明细）
@@ -238,6 +269,10 @@ def audit_pair(txt_path: str, docx_path: str, paper_type: str = "管理") -> dic
                 rf'>{kind}(\d+)[ 　]', docxml)))
             if caps and caps != list(range(1, len(caps) + 1)):
                 warns.append(f"{kind}注编号不连续{caps[:10]}")
+            # 【护栏】双重编号残迹: 注文同时带流水号与章节号("表1 表1-1 xxx")
+            dbl = re.findall(rf'>{kind}\d+[ 　]{kind}\d+-\d+', docxml)
+            if dbl:
+                warns.append(f"{kind}注双重编号{len(dbl)}处({dbl[0][1:14]}…)")
 
     # 正文级检查
     _check_text_quality(text, warns, paper_type)
