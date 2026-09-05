@@ -9,8 +9,8 @@
 import os, re, sys, io, csv, json, zipfile, argparse
 from docx import Document
 
-TYPE_DIR = {"土木": "土木", "机械": "机械", "经管": "管理", "设计": "设计"}
-WORD_MIN = {"管理": 800, "机械": 800, "土木": 800, "设计": 900}
+TYPE_DIR = {"土木": "土木", "机械": "机械", "经管": "管理", "设计": "设计", "法学": "法学"}
+WORD_MIN = {"管理": 800, "机械": 800, "土木": 800, "设计": 900, "法学": 900}
 WORD_MIN_SPECIAL = 500  # 绪论/结论/总结/参考文献章
 CH_HEAD = re.compile(r"^(第[一二三四五六七八九十\d]+章)\s*(\S.{0,28})$")
 CH_HEAD.match  # noqa
@@ -257,14 +257,54 @@ def audit_docx_only(path, ptype):
     if ph:
         res["problems"].append(f"占位残留{len(ph)}处")
 
+    # ---- 法学专项(评阅必达项) ----
+    if ptype == "法学":
+        res["stats"].update(_law_checks(paras, text, res))
+
     # ---- 判级: 结构性缺陷阻断, 版式类警告 ----
     hard = re.search(r"空白图|缺摘要|缺关键词|缺目录|参考文献不足|占位残留|封面缺字段|"
-                     r"引用失配|编号不连续|双重编号|无法解析", ";".join(res["problems"]))
+                     r"引用失配|编号不连续|双重编号|无法解析|"
+                     r"法学正文不足|法学摘要字数|法学关键词数|缺案例来源|缺案号", ";".join(res["problems"]))
     if hard:
         res["verdict"] = "❌"
     elif res["problems"]:
         res["verdict"] = "⚠️"
     return res
+
+
+def _law_checks(paras, text, res):
+    """法学本科论文评阅必达项: 正文≥8000 / 摘要300-500 / 关键词3-5 / 文献≥10 / 案例真实+标注来源"""
+    st = {}
+    body_start = 0
+    for i, p in enumerate(paras):
+        s = p.strip()
+        if re.match(r"^第[一二三四五六七八九十\d]+章", s) and "\t" not in s:
+            body_start = i
+            break
+    head = paras[body_start] if body_start < len(paras) else ""
+    m_ref = re.search(r"^参考文献$", text, re.M)
+    core = text[text.find(head):m_ref.start()] if (m_ref and head) else text
+    n = len(re.sub(r"\s|第[一二三四五六七八九十\d]+章[^\n]{0,30}|\d+\.\d+(\.\d+)?[^\n]{0,30}", "", core))
+    st["law_body_words"] = n
+    if n < 8000:
+        res["problems"].append(f"法学正文不足({n}<8000)")
+    m = re.search(r"摘要\s*\n(.+?)\n", text, re.S)
+    if m:
+        na = len(re.sub(r"\s", "", m.group(1)))
+        st["law_abstract"] = na
+        if not (300 <= na <= 500):
+            res["problems"].append(f"法学摘要字数({na}不在300-500)")
+    m = re.search(r"关键词\s*\n(.+)", text)
+    if m:
+        nk = len([k for k in re.split(r"[;；]", m.group(1)) if k.strip()])
+        st["law_keywords"] = nk
+        if not (3 <= nk <= 5):
+            res["problems"].append(f"法学关键词数({nk}不在3-5)")
+    if not re.search(r"指导性案例|指导案例\d+号|裁判文书网|北大法宝|公报|典型案例", text):
+        res["problems"].append("缺案例来源标注")
+    if not re.search(r"指导案例\s*\d+\s*号", text):
+        res["problems"].append("缺案号(指导案例N号)")
+    return st
 
 
 def main():
