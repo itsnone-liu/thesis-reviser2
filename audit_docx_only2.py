@@ -79,6 +79,13 @@ def check_images(xml, lines):
     caps, refs = captions_and_refs(lines)
     cap_ids = [c for c, _ in caps]
     missing = []
+    # 裸行图注（丢"图"字头）: 正文区 N-N 标题 行(张超5-1/5-2/5-3漏网源)
+    toc_end = next((i for i, (t, _) in enumerate(lines) if re.match(r"^第\s*1\s*章", t)), 0)
+    for t, _ in lines[toc_end:]:
+        if re.match(r"^\d{1,2}-\d{1,3}\s+\S.{4,40}$", t) and not re.search(r"\d\s*$", t) \
+           and any(k in t for k in ("图", "布置", "剖面", "示意", "流程", "平面", "配筋", "立面")):
+            missing.append("裸行图注:" + t[:20])
+            break
     if len(cap_ids) > n_draw:
         # 图注多于内嵌图 → 缺（逐个列出，从后往前缺最常见，但保守：全列差集）
         missing = cap_ids[n_draw:] if n_draw < len(cap_ids) else []
