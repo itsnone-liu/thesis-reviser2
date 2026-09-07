@@ -5,7 +5,7 @@ core.py — 论文系统基础层
 LLM调用、DOCX排版工具、图表/图片渲染、标签解析
 所有模块（profile/generator/renderer/reviser）都基于此层
 """
-import os, re, io, json, time, uuid, threading, shutil, base64, hashlib
+import os, re, io, json, time, uuid, threading, shutil, base64
 import subprocess
 from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -31,31 +31,6 @@ try:
 except Exception:
     generate_engineering_png = None
 
-try:
-    from civil_figures import is_seismic_distribution, render_seismic_distribution, render_civil_figure
-except Exception:
-    is_seismic_distribution = lambda drawing: False
-    render_seismic_distribution = None
-    render_civil_figure = None
-
-try:
-    from mechanical_consistency import gate_mechanical_drawing, format_gate_report, resolve_article_spec
-except Exception:
-    gate_mechanical_drawing = None
-    format_gate_report = None
-    resolve_article_spec = None
-
-try:
-    from civil_consistency import gate_civil_drawing, format_civil_gate_report
-except Exception:
-    gate_civil_drawing = None
-    format_civil_gate_report = None
-
-try:
-    from mechanical_figures import render_mechanical_figure
-except Exception:
-    render_mechanical_figure = None
-
 # 确定性标签守卫（渲染前校验/修复/降级，无LLM）
 try:
     from tagguard import (audit_and_repair, render_report_text,
@@ -77,18 +52,6 @@ DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 IMAGE_API_KEY = os.getenv("IMAGE_API_KEY", "")
 IMAGE_API_URL = os.getenv("IMAGE_API_URL", "https://aihubmix.com/v1/images/generations")
 IMAGE_MODEL = "gpt-image-2"
-IMAGE_API_MIN_INTERVAL_SECONDS = float(os.getenv("IMAGE_API_MIN_INTERVAL_SECONDS", "0"))
-IMAGE_API_MAX_REQUESTS_PER_RUN = int(os.getenv("IMAGE_API_MAX_REQUESTS_PER_RUN", "0"))
-IMAGE_API_MAX_RETRIES = int(os.getenv("IMAGE_API_MAX_RETRIES", "0"))
-IMAGE_API_CIRCUIT_FAILURES = int(os.getenv("IMAGE_API_CIRCUIT_FAILURES", "3"))
-IMAGE_FALLBACK_API_URL = os.getenv("IMAGE_FALLBACK_API_URL", "")
-IMAGE_FALLBACK_API_KEY = os.getenv("IMAGE_FALLBACK_API_KEY", "")
-IMAGE_CACHE_DIR = os.getenv("IMAGE_CACHE_DIR", "")
-IMAGE_CACHE_ENABLED = os.getenv("IMAGE_CACHE_ENABLED", "1").lower() not in {"0", "false", "no"}
-_image_api_lock = threading.Lock()
-_image_api_request_count = 0
-_image_api_last_request_at = 0.0
-_image_primary_failures = 0
 COLORS = ["#5B9BD5", "#ED7D31", "#A5A5A5", "#FFC000", "#4472C4", "#70AD47", "#264478"]
 
 # ==================== 章节配置 ====================
@@ -1763,14 +1726,6 @@ CRITICAL STYLE RULES:
 
 def generate_single_image(drawing: dict, save_dir: str, max_retries: int = 3) -> Optional[str]:
     """调用AI图片API生成单张图纸图片，返回本地路径"""
-    # Deterministic engineering templates take precedence.  GPT is reserved
-    # for effect/visual assets or figure types without a local template.
-    try:
-        local_path = generate_diagram_image(drawing, save_dir)
-        if local_path and os.path.exists(local_path):
-            return local_path
-    except Exception as exc:
-        print(f"本地工程图后端失败，转入备用通道: {exc}")
     img_type = drawing.get("type", "设计图")
     title = drawing.get("title", "设计图")
     description = drawing.get("description", "")
@@ -1814,8 +1769,6 @@ Subject: {title}
 Type: {img_type}
 Description: {description}
 Context: {extra}
-
-Typography policy: prioritize visual quality and composition. Do not render Chinese characters, long words, numbers, labels, logos, or watermarks inside the image. Leave clean blank label areas; exact thesis text will be added locally.
 
 Requirements:
 - The image must not be blank or mostly white.
@@ -1877,70 +1830,11 @@ HARD FAIL CONDITIONS:
 - The title is: {title}
 - Put large enough objects or line elements in the center and corners so the image does not look empty.
 """
-def _image_cache_path(prompt_text: str, drawing: dict) -> Optional[str]:
-    if not IMAGE_CACHE_ENABLED or not IMAGE_CACHE_DIR:
-        return None
-    drawing_key = str(drawing.get("seq") or drawing.get("id") or "image")
-    digest = hashlib.sha256(
-        f"{IMAGE_MODEL}\n{drawing_key}\n{prompt_text}".encode("utf-8")
-    ).hexdigest()[:24]
-    os.makedirs(IMAGE_CACHE_DIR, exist_ok=True)
-    return os.path.join(IMAGE_CACHE_DIR, f"{digest}.png")
-
-
 def _call_image_api(prompt_text: str, drawing: dict, save_dir: str, max_retries: int = 6) -> Optional[str]:
-    global _image_primary_failures
-    cache_path = _image_cache_path(prompt_text, drawing)
-    drawing_key = str(drawing.get("seq") or drawing.get("id") or uuid.uuid4().hex[:8])
-    target_path = os.path.join(save_dir, f"drawing_{drawing_key}.png")
-    if cache_path and os.path.exists(cache_path) and os.path.getsize(cache_path) > 0:
-        shutil.copy2(cache_path, target_path)
-        print(f" 图片缓存命中: {target_path}")
-        return target_path
-
-    providers = [(IMAGE_API_URL, IMAGE_API_KEY, "primary")]
-    if IMAGE_FALLBACK_API_URL and IMAGE_FALLBACK_API_KEY:
-        providers.append((IMAGE_FALLBACK_API_URL, IMAGE_FALLBACK_API_KEY, "fallback"))
-    for api_url, api_key, provider_name in providers:
-        if not api_url or not api_key:
-            continue
-        if (
-            provider_name == "primary"
-            and IMAGE_API_CIRCUIT_FAILURES > 0
-            and _image_primary_failures >= IMAGE_API_CIRCUIT_FAILURES
-        ):
-            print(" 图片主通道已熔断，直接尝试fallback")
-            continue
-        path = _call_image_api_provider(
-            prompt_text, drawing, save_dir, max_retries, api_url, api_key, provider_name
-        )
-        if path:
-            if provider_name == "primary":
-                _image_primary_failures = 0
-            if cache_path:
-                shutil.copy2(path, cache_path)
-            return path
-        if provider_name == "primary":
-            _image_primary_failures += 1
-    return None
-
-
-def _call_image_api_provider(
-    prompt_text: str,
-    drawing: dict,
-    save_dir: str,
-    max_retries: int,
-    api_url: str,
-    api_key: str,
-    provider_name: str,
-) -> Optional[str]:
-    global _image_api_request_count, _image_api_last_request_at
-    if not api_key:
-        return None
-    if IMAGE_API_MAX_RETRIES > 0:
-        max_retries = min(max_retries, IMAGE_API_MAX_RETRIES)
+    if not IMAGE_API_KEY:
+        raise RuntimeError("IMAGE_API_KEY is not set")
     headers = {
-        "Authorization": f"Bearer {api_key}",
+        "Authorization": f"Bearer {IMAGE_API_KEY}",
         "Content-Type": "application/json"
     }
     data = {
@@ -1951,22 +1845,7 @@ def _call_image_api_provider(
     }
     for attempt in range(max_retries):
         try:
-            with _image_api_lock:
-                if IMAGE_API_MAX_REQUESTS_PER_RUN < 0:
-                    print("  图片API已为本次运行禁用，跳过")
-                    return None
-                if (IMAGE_API_MAX_REQUESTS_PER_RUN > 0
-                        and _image_api_request_count >= IMAGE_API_MAX_REQUESTS_PER_RUN):
-                    print("  图片API已达到本次运行请求上限，跳过")
-                    return None
-                elapsed = time.monotonic() - _image_api_last_request_at
-                wait_seconds = max(0.0, IMAGE_API_MIN_INTERVAL_SECONDS - elapsed)
-                if wait_seconds > 0:
-                    print(f"  图片API冷却中，等待{wait_seconds:.0f}秒...")
-                    time.sleep(wait_seconds)
-                _image_api_request_count += 1
-                _image_api_last_request_at = time.monotonic()
-            resp = requests.post(api_url, headers=headers, json=data, timeout=300)
+            resp = requests.post(IMAGE_API_URL, headers=headers, json=data, timeout=300)
             if resp.status_code == 200:
                 result = resp.json()
                 img_data = result.get("data", [{}])[0]
@@ -2361,17 +2240,6 @@ def _is_blank_image(img_path: str) -> bool:
 def generate_diagram_image(drawing: dict, save_dir: str) -> Optional[str]:
     """生成轻量机械/设计结构图、流程图、原理图的本地图片后端。"""
     os.makedirs(save_dir, exist_ok=True)
-    if render_mechanical_figure is not None:
-        mech_path = render_mechanical_figure(drawing, save_dir)
-        if mech_path:
-            return mech_path
-    # Civil calculation charts use a dedicated deterministic renderer.  This
-    # avoids the generic flowchart fallback and keeps every numeric label tied
-    # to the drawing specification.
-    if render_civil_figure is not None:
-        civil_path = render_civil_figure(drawing, save_dir)
-        if civil_path:
-            return civil_path
     img_type = drawing.get("type", "结构图")
     title = drawing.get("title", "结构示意图")
     description = drawing.get("description", "")
@@ -2693,34 +2561,10 @@ def generate_diagram_image(drawing: dict, save_dir: str) -> Optional[str]:
     return out_path
 
 
-def generate_all_images(drawings: list, save_dir: str, max_workers: int = 2,
-                        source_text: str = "", mechanical_spec: dict | None = None,
-                        civil_spec: dict | None = None) -> dict:
+def generate_all_images(drawings: list, save_dir: str, max_workers: int = 2) -> dict:
     """并发生成所有图纸图片，返回 {seq: local_path}。
     注意：只给没有seq的drawing分配序号——补图场景传入的是缺失子集，
     若无条件重编号1..N会导致文件名与原seq错位、覆盖已有图。"""
-    source_text = source_text or os.environ.get("THESIS_SOURCE_TEXT", "")
-    if gate_mechanical_drawing is not None and source_text:
-        mechanicalish = any(any(k in str(d).lower() for k in ("夹具", "定位", "装配", "零件", "铣削", "机械")) for d in drawings)
-        if mechanicalish:
-            if mechanical_spec is None and resolve_article_spec is not None:
-                mechanical_spec = resolve_article_spec(source_text)
-            gate = gate_mechanical_drawing(spec=mechanical_spec or {}, text=source_text)
-            if not gate.get("ok"):
-                report = format_gate_report(gate) if format_gate_report else str(gate)
-            raise ValueError(report)
-    # Civil figures use the same pre-render policy: conflicting labelled
-    # values stop the whole batch, so no figure can silently embed stale data.
-    if gate_civil_drawing is not None and source_text:
-        civilish = any(
-            any(k in str(d).lower() for k in ("土木", "结构", "梁", "柱", "楼板", "抗震", "施工进度", "劳动力"))
-            for d in drawings
-        )
-        if civilish:
-            gate = gate_civil_drawing(spec=civil_spec or {}, text=source_text)
-            if not gate.get("ok"):
-                report = format_civil_gate_report(gate) if format_civil_gate_report else str(gate)
-                raise ValueError(report)
     result = {}
     os.makedirs(save_dir, exist_ok=True)
     used = {d.get("seq") for d in drawings if d.get("seq")}
@@ -2850,13 +2694,9 @@ def finalize_docx(docx_path: str, update=None):
     doc.save(temp_docx)
     update("正在用LibreOffice渲染PDF计算页码...", 95)
     pdf_path = os.path.join(os.path.dirname(temp_docx) or '.', f'_temp_{tag}.pdf')
-    try:
-        subprocess.run(['libreoffice', '--headless', '--convert-to', 'pdf',
-                        temp_docx, '--outdir', os.path.dirname(pdf_path)],
-                       capture_output=True, text=True, timeout=300)
-    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-        print(f"  LibreOffice不可用，跳过PDF页码校准: {exc}")
-        update("LibreOffice不可用，保留Word自动页码", 96)
+    subprocess.run(['libreoffice', '--headless', '--convert-to', 'pdf',
+                    temp_docx, '--outdir', os.path.dirname(pdf_path)],
+                   capture_output=True, text=True, timeout=300)
     expected = temp_docx.replace('.docx', '.pdf')
     if os.path.exists(expected):
         os.rename(expected, pdf_path)
