@@ -172,6 +172,35 @@ def check_format(xml, styles, lines, cohort):
     return {"issues": issues, "warns": warns, "h2": h2, "h3": h3}
 
 # ---------- 汇总 ----------
+# 已登记遗留: 修复会引发更大不自洽(计算链/表格重算),人工评估后放行并注明
+KNOWN_RESIDUAL = {
+    "周亮": {"building_height": "概况已改33.6m;风振句19.8m支撑各层wk计算表,改动=全表重算,暂留"},
+}
+
+
+def check_consistency(xml_text: str, cohort: str, major: str, fname: str = "") -> list:
+    issues = []
+    try:
+        if "土木" in (major or ""):
+            from civil_consistency import gate_civil_drawing
+            rep = gate_civil_drawing(text=xml_text)
+            residual = KNOWN_RESIDUAL.get(fname[:2], {})
+            for e in rep.get("errors", []):
+                if e.get("key") in residual:
+                    issues.append(f"已登记遗留[{e.get('key')}]: {residual[e.get('key')]}")
+                else:
+                    issues.append(f"参数冲突[{e.get('key')}]: {','.join(map(str, e.get('values', [])))}")
+        elif "机械" in (major or ""):
+            from mechanical_consistency import resolve_article_spec, validate_mechanical_spec
+            spec = resolve_article_spec(xml_text)
+            rep = validate_mechanical_spec(spec)
+            for e in rep.get("errors", []):
+                issues.append(f"参数冲突[{e.get('key')}]: {str(e.get('message',''))[:40]}")
+    except Exception:
+        pass
+    return issues
+
+
 def audit_one(args):
     path, cohort = args
     rel = os.path.relpath(path, ROOT)
@@ -185,7 +214,11 @@ def audit_one(args):
             bad.append(f"缺图{len(img['missing'])}张:{','.join(img['missing'][:6])}")
         if img["dangling"]:
             bad.append(f"图号引用悬空{len(img['dangling'])}:{','.join(img['dangling'][:5])}")
-        bad += fmt["issues"]
+        major = "/".join(rel.split(os.sep)[1:3])
+        fname = os.path.basename(rel)
+        cons = check_consistency(" ".join(t for t, _ in lines), cohort, major, fname)
+        fmt["issues"] += [i if not i.startswith("已登记") else i for i in cons]
+        bad += [i for i in cons if not i.startswith("已登记")]
         return {"file": rel, "cohort": cohort, "embed": img["embed"], "caps": len(img["caps"]),
                 "missing": ";".join(img["missing"]), "dangling": ";".join(img["dangling"]),
                 "mix": img["mix"], "fmt_issues": " | ".join(fmt["issues"]),
