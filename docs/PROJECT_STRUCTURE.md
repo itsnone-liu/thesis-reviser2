@@ -41,3 +41,10 @@
 - `audit_docx_only2.py`：论文终版 273 篇无源审计（缺图/引用悬空/封面/目录/标题编号）。要点：body 内嵌 `w:drawing`/`w:pict` 计数而非 media 数；命名空间前缀归一（Word/WPS 另存后的 `ns0:` 文档）；引用识别三防——构词防（简图/插图/附图/图纸/大样图/示意图/流程图/路线图/效果图+数字是名词）、TOC 粘连防（目录行"标题+页码"非引用）、跨词拼接防（编号内禁空白）
 - `fix_final_images.py`：docx 级四类手术（A 图注在图缺→AI 生图插图注前；B 图注图都缺→生图+造注插引用句后；C 图注补"图章-序"编号，双侧探测方位；D 引用重编号）。幂等注意：C 类重复执行会把已编号图注再编号
 - 配套报告：`/root/project/workspace/{终版审计_终验0907,加固审计_0907,图片修复报告_0907}.csv`；修订输出 `/root/project/workspace/论文终版_修订0907/`
+
+### txt 预渲染审计层（2026-09-07，用户拍板：生成→txt后、渲染前独立审计）
+
+- `audit_txt.py`：8 维确定性审计（T1标签变体 graphic/figure/image→渲染器不认即图丢 / T2 LaTeX残留 / T3裸行图注 / T4裸标题+括号参数 / T5孤儿表注 / T6孤儿图注 / T7摘要区标签残留 / T8图表引用悬空），hard 阻断+warn 告警，只报告不改写（改写归 tagguard）
+- `renderer.py`：render() 入口已接审计层，hard 直接 ValueError 阻断渲染
+- tagguard 扩容：变体标签规范化（graphic/figure/fig/image→drawing，name=→title= 属性映射）
+- 验证：50 篇存量 txt 批跑 hard 命中恰好=已修复两案（严涛/张超），零误报

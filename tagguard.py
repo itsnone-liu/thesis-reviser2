@@ -25,6 +25,15 @@ _TAG_TYPOS = {
     "taible": "table", "tablle": "table", "tabel": "table", "tabe": "table",
     "chrt": "chart", "char": "chart", "chatr": "chart", "chrat": "chart",
     "cart": "chart",
+    # 变体标签(语义等价,属性名不同): graphic/figure/image用name=,规范化映射到title=
+    "graphic": "drawing", "figure": "drawing", "fig": "drawing", "image": "drawing",
+}
+# 变体标签的属性名映射(变体属性名→drawing标准属性名)
+_TAG_ALIAS_ATTRS = {
+    "graphic": {"name": "title", "caption": "title", "desc": "description"},
+    "figure": {"name": "title", "caption": "title", "desc": "description"},
+    "fig": {"name": "title", "caption": "title", "desc": "description"},
+    "image": {"name": "title", "alt": "title", "desc": "description"},
 }
 _VALID_TAGS = {"chart", "table", "drawing"}
 
@@ -494,6 +503,13 @@ def audit_and_repair(text: str):
                 report["fixed"]["unclosed"] += 1
 
         attrs = _parse_attrs(raw)
+        needs_reserialize = False
+        # 变体标签属性名映射(graphic name=→drawing title=),命中即需重序列化
+        if name in _TAG_ALIAS_ATTRS:
+            for src_key, dst_key in _TAG_ALIAS_ATTRS[name].items():
+                if src_key in attrs and dst_key not in attrs:
+                    attrs[dst_key] = attrs.pop(src_key)
+            needs_reserialize = True
         entry = {"seq": idx, "title": attrs.get("title", "")[:40]}
         try:
             if canonical == "chart":
@@ -513,7 +529,7 @@ def audit_and_repair(text: str):
         entry["issues"] = issues
         entry["action"] = action
         # 扫描层问题(缺括号/未自闭合/错拼)必须重序列化修复，即使属性校验全通过
-        needs_reserialize = bool(scan_issues)
+        needs_reserialize = bool(scan_issues) or needs_reserialize
         if action == "dropped":
             replacements.append((start, end, None))
             report["fixed"]["dropped"] += 1
