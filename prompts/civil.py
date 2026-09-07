@@ -114,6 +114,12 @@ STRICT_OUTPUT_RULE = """【输出纪律 - 必须严格遵守】
 4. drawing 标签必须完整闭合，且单独成行，禁止输出 `<drawing />/`、`</draing>`、`<draing>`、`<drowing>` 之类的坏标签
 5. 需要图纸时，把完整 drawing 标签放在该章节末尾，每个标签占一行
 6. 需要表格时，直接输出完整 `<table/>` 标签，不要输出 HTML 片段
+7. 正文中写“如图所示/图中/见图”等指代时，所指的图必须真实存在于本章标签中——禁止提及不存在的图
+8. 本章末尾必须自报图表清单，格式（没有图表则写“无”）：
+[FIGURES]
+图N-1 标题
+表N-1 标题
+[/FIGURES]
 """
 
 def build_chapter_prompt(chapter_name: str, chapter_num: int, profile: dict,

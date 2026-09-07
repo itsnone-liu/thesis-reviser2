@@ -48,3 +48,14 @@
 - `renderer.py`：render() 入口已接审计层，hard 直接 ValueError 阻断渲染
 - tagguard 扩容：变体标签规范化（graphic/figure/fig/image→drawing，name=→title= 属性映射）
 - 验证：50 篇存量 txt 批跑 hard 命中恰好=已修复两案（严涛/张超），零误报
+
+### 漂移治理+空承诺闭环（2026-09-07，两轮架构讨论落地）
+
+- `factcard.py`：事实卡（章节生成时把已确立工程参数注入后续 prompt——"查表"替代"回忆"）+ 章节检查点（章后跑闸门，冲突带反馈重写本章，修复半径=一章，最多重试1次）
+- `generator.py`：`_generate_civil`（事实卡+检查点）/`_generate_mechanical`（检查点；事实卡由既有 machine_spec 结构化承担）
+- `audit_txt.py` 新增维度：T9 无编号指代解算（如图/图中/下图→同节锚点搜索，无锚=空承诺 hard；类别名词/带编号/引他文排除）、T10 自报清单对账（[FIGURES]块 vs 实际标签）
+- `rescue_refs.py`：确定性补偿器（R1 裸标题+括号→drawing 标签；description 只用原文素材不编造；独立于审计层——审计只报告，补偿显式调用）
+- `prompts/civil.py`：输出纪律+2（禁止提及不存在的图；章末自报 [FIGURES] 清单）
+- `civil_consistency.py`：抽取器副词容差（"均为/约为3.6m"不再漏抽）
+- 验证：T9 活性4案例全对+50篇存量零误报；补偿端到端（T4 hard→标签→全绿）；事实卡真实素材抽卡通过；273 docx 全绿
+- 两阶段生成（图表清单先行 schema）列为新管线待办；无源审计按用户拍板不做（今后强制保留 txt）

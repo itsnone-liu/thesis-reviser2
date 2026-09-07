@@ -33,17 +33,17 @@ def extract_civil_facts(text: str) -> Dict[str, List[str]]:
     """Extract repeated, semantically-labelled civil design parameters."""
     facts: Dict[str, List[str]] = defaultdict(list)
     patterns = {
-        "floor_count": rf"(?:总层数|地上(?:建筑)?层数|共)(?:为|：|:)?\s*{_NUM}\s*层",
+        "floor_count": rf"(?:总层数|地上(?:建筑)?层数|共)(?:为|均?约?为?|：|:)?\s*{_NUM}\s*层",
         # 各层层高语义不同(首层/标准层/设备层),分开成独立key才可比较
         "story_height_first": rf"首层层高(?:为|：|:)?\s*{_NUM}\s*m",
-        "story_height_standard": rf"(?:标准层高|标准层层高)(?:为|：|:)?\s*{_NUM}\s*m",
+        "story_height_standard": rf"(?:标准层高|标准层层高)(?:均?约?为?|：|:)?\s*{_NUM}\s*m",
         "slab_thickness_floor": rf"(?:楼板厚度|楼板厚)(?:为|：|:)?\s*{_NUM}\s*mm",
         "slab_thickness_roof": rf"(?:屋面板厚|屋面板厚度)(?:为|：|:)?\s*{_NUM}\s*mm",
         "column_section": r"(?:柱截面|框架柱截面|柱尺寸)(?:为|：|:)?\s*(\d+(?:\.\d+)?\s*[x×]\s*\d+(?:\.\d+)?)\s*mm",
         "beam_section": r"(?:梁截面|框架梁截面|梁尺寸)(?:为|：|:)?\s*(\d+(?:\.\d+)?\s*[x×]\s*\d+(?:\.\d+)?)\s*mm",
         "concrete_grade": r"(?:混凝土强度等级|混凝土等级|采用混凝土)(?:为|：|:)?\s*(C\d+)",
         "rebar_grade": r"(?:钢筋等级|纵筋等级|箍筋等级|采用钢筋)(?:为|：|:)?\s*(HRB\d+|HPB\d+|HRB\s*\d+)",
-        "building_height": rf"(?:建筑高度|结构高度)(?:为|：|:)?\s*{_NUM}\s*m",
+        "building_height": rf"(?:建筑高度|结构高度)(?:均?约?为?|：|:)?\s*{_NUM}\s*m",
         # 只认真总工期; "计划工期"是分阶段专用词,分部工程也写"总工期"(如"主体结构总工期120天")
         # → 匹配点前18字内含分部限定词的丢弃
         "construction_duration": rf"(?:本工程|该工程|施工)?总工期(?:为|：|:)?\s*{_NUM}\s*(?:天|日|d)",

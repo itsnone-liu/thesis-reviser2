@@ -1727,6 +1727,26 @@ def _generate_mechanical(profile: dict, update) -> str:
         content = clean_text(content)
         body, chapter_json = _extract_mech_chapter_output(content, name, num, machine_spec)
         body = _check_calculation_consistency(body, name, machine_spec, profile)
+        # 章节检查点: 机械闸门冲突带反馈重写(修复半径=一章,最多1次)
+        try:
+            from factcard import checkpoint_chapter
+            errs = checkpoint_chapter("\n".join(b for _, b, _ in chapters_content) + "\n" + body, "机械")
+            if errs:
+                update(f"第{num}章闸门冲突{len(errs)}项,重写...", pct)
+                fb = prompt + ("\n【一致性警告:上一稿参数与全文冲突,必须消除】\n"
+                               + "\n".join(f"- {e}" for e in errs))
+                retry = _call_llm_checked(fb, max_tokens=MC_WORD_LIMITS.get(name, 1000) * 3,
+                                          label=f"机械·第{num}章{name}·一致性重写")
+                retry = clean_text(retry)
+                rbody, rjson = _extract_mech_chapter_output(retry, name, num, machine_spec)
+                rbody = _check_calculation_consistency(rbody, name, machine_spec, profile)
+                errs2 = checkpoint_chapter("\n".join(b for _, b, _ in chapters_content) + "\n" + rbody, "机械")
+                if len(errs2) < len(errs):
+                    body, chapter_json, errs = rbody, rjson, errs2
+                if errs:
+                    print(f"  [闸门] 第{num}章遗留冲突(人工关注): {errs}")
+        except ImportError:
+            pass
         chapters_content.append((name, body, chapter_json))
 
     update("正在生成参考文献...", 93)
@@ -1787,15 +1807,36 @@ def _generate_civil(profile: dict, update) -> str:
     chapters_content = []
     chapter_names = [name for name, _ in outline]
     total_ch = len(chapter_names) or 1
+    acc = f"摘要\n{abstract}"  # 事实累积: 事实卡/检查点的输入
+    from factcard import build_fact_card, checkpoint_chapter
     for idx, (name, num) in enumerate(outline):
         pct = 10 + int((idx + 0.5) / total_ch * 75)
         update(f"正在生成第{num}章 {name}...", pct)
-        prompt = cv_chapter_prompt(name, num, profile, outline)
+        card = build_fact_card(acc, "土木")
+        prompt = cv_chapter_prompt(name, num, profile, outline) + card
         content = _call_llm_checked(prompt, max_tokens=CIV_WORD_LIMITS.get(name, 1000) * 2,
                                     label=f"土木·第{num}章{name}")
         content = clean_text(content)
         content = re.sub(r'^第[一二三四五六\d]+章.*?\n', '', content).strip()
         content = normalize_civil_markup(content)
+        # 章节检查点: 参数冲突带反馈重写本章(修复半径=一章,最多1次)
+        errs = checkpoint_chapter(acc + "\n" + content, "土木")
+        if errs:
+            update(f"第{num}章检查点冲突{len(errs)}项,带反馈重写...", pct)
+            fb = prompt + ("\n【一致性警告:上一稿与全文既有参数冲突,重写本章必须消除】\n"
+                           + "\n".join(f"- {e}" for e in errs))
+            retry = _call_llm_checked(fb, max_tokens=CIV_WORD_LIMITS.get(name, 1000) * 2,
+                                      label=f"土木·第{num}章{name}·一致性重写")
+            retry = clean_text(retry)
+            retry = re.sub(r'^第[一二三四五六\d]+章.*?\n', '', retry).strip()
+            retry = normalize_civil_markup(retry)
+            errs2 = checkpoint_chapter(acc + "\n" + retry, "土木")
+            if len(errs2) < len(errs):
+                content = retry
+                errs = errs2
+            if errs:
+                print(f"  [检查点] 第{num}章遗留冲突(人工关注): {errs}")
+        acc += f"\n第{num}章 {name}\n{content}"
         chapters_content.append((name, content))
 
     update("正在生成参考文献...", 92)

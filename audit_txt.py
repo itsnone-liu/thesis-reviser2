@@ -40,6 +40,13 @@ RE_FCAP = re.compile(r"^图\s?\d{1,2}[-–]\d{1,3}\s+\S", re.M)
 RE_REF = re.compile(r"(?<![简插附纸样意标流路线效])图\s?(\d{1,2}[-–]\d{1,3})")
 RE_TREF = re.compile(r"(?<![数逐附])表\s?(\d{1,2}[-–]\d{1,3})")
 RE_HEADING = re.compile(r"^(?:第\s*\d+\s*章|\d+\.\d+(\.\d+)?\s)", re.M)
+# T9 无编号指代: 如图/下图/上图/图中/见图/图示 (无编号的图指称)
+RE_UNNUM_REF = re.compile(r"如图所示|如下图|如上图|见下图|见图|图[中示]|本图|该图|[，。；]下图|[，。；]上图")
+# 带编号指代归T8对账域,不算空承诺
+RE_NUMED_REF = re.compile(r"图\s?\d{1,2}[-–]\d{1,3}")
+RE_NOT_REF = re.compile(r"试图|意图|版图|宏图|蓝图|图纸|图形|地图书|图书|企图")
+RE_ANCHOR = re.compile(r"<(?:drawing|chart|table|graphic)\b|^图\s?\d{1,2}[-–]\d{1,3}\s+\S|^表\s?\d{1,2}[-–]\d{1,3}\s+\S|^[\u4e00-\u9fa5]{2,14}(?:示意图|布置图|剖面图|大样图|流程图|横道图)$", re.M)
+RE_SOFTEN = re.compile(r"(?:类似|参照|其他工程|其他项目|文献|规范中?|教材)[^。]{0,12}$")
 
 
 def audit_txt(text: str) -> dict:
@@ -87,6 +94,31 @@ def audit_txt(text: str) -> dict:
     if mab and re.search(r"<(?:table|drawing|chart|graphic)\b", mab.group(1)):
         hard.append("T7摘要区标签残留")
 
+    # T9 无编号指代解算: 指代词→同节找锚点(图注/标签/裸标题),无锚=空承诺
+    lines9 = text.splitlines()
+    heads = [(m.start(), m.group(0)) for m in RE_HEADING.finditer(text)]
+    for m in RE_UNNUM_REF.finditer(text):
+        seg = text[max(0, m.start() - 12):m.start()]
+        if RE_NUMED_REF.search(text[m.start():m.start() + 10]):
+            continue
+        # 类别名词复合(设计图/施工图/分解图示等)非本文指代
+        if re.search(r"(?:设计|施工|地形|平面|立面|断面|区位|结构|分解|示意|装配|系统)", seg):
+            continue
+        if RE_NOT_REF.search(seg + text[m.start():m.start() + 2]):
+            continue
+        if RE_SOFTEN.search(seg):
+            continue  # 引他文泛指,降级不计
+        # 所在节边界: 指代点往前最近标题 → 往后下一标题
+        sec_start = max([p for p, _ in heads if p <= m.start()] + [0])
+        nxt = [p for p, _ in heads if p > m.start()]
+        sec_end = nxt[0] if nxt else len(text)
+        # 扩一段: 前后各300字(图可先于指代出现)
+        probe = text[max(0, sec_start - 300):min(len(text), sec_end + 300)]
+        if not (RE_ANCHOR.search(probe) or re.search(r"^\d{1,2}-\d{1,3}\s+\S", probe, re.M)):
+            ctx = text[max(0, m.start() - 20):m.start() + 26].replace("\n", " ")
+            hard.append(f"T9空承诺指代: …{ctx}… (所在节及邻段无任何图/表锚点)")
+            break  # 每篇报首个即可
+
     # T8 引用悬空（图注意图集合=显式图注+标签title）
     intent_figs = set(RE_REF.findall(text))
     cap_figs = set(RE_FCAP.findall(text)) | set(RE_REF.findall(" ".join(
@@ -100,6 +132,17 @@ def audit_txt(text: str) -> dict:
     dangling_t = sorted(intent_ts - cap_ts)
     if dangling_t:
         warn.append(f"T8表引用悬空: {','.join(dangling_t[:5])}")
+
+    # T10 自报清单对账: [FIGURES]块 vs 实际标签(自报≠实际=立即定位)
+    mrep = re.search(r"\[FIGURES\]\n(.*?)\[/FIGURES\]", text, re.S)
+    if mrep:
+        claimed = re.findall(r"^(图|表)\s?(\d{1,2}[-–]\d{1,3})", mrep.group(1), re.M)
+        actual_tags = set(re.findall(r'<(?:drawing|chart)[^>]*?title="[^"]*?图\s?(\d{1,2}[-–]\d{1,3})', text)) | \
+                        set(re.findall(r"<table[^>]*?(?:title|caption)=\"[^\"]*?表\s?(\d{1,2}[-–]\d{1,3})", text))
+        actual_caps = set(RE_FCAP.findall(text)) | set(RE_TCAP.findall(text))
+        for kind, num in claimed:
+            if num not in actual_tags and num not in actual_caps:
+                warn.append(f"T10自报≠实际: {kind}{num} 自报有但全文无对应标签/注")
 
     return {"hard": hard, "warn": warn}
 
