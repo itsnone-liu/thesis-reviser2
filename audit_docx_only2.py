@@ -79,6 +79,11 @@ def check_images(xml, lines):
     caps, refs = captions_and_refs(lines)
     cap_ids = [c for c, _ in caps]
     missing = []
+    # graphic/drawing 标签以转义文本裸躺正文(渲染器不认<graphic>标签致图全丢, 严涛漏网源)
+    body = " ".join(t for t, _ in lines)
+    for tag in ("&lt;graphic", "&lt;drawing", "&lt;table"):
+        if tag in body:
+            missing.append("标签转义残留:" + tag.replace("&lt;", "<"))
     # 裸行图注（丢"图"字头）: 正文区 N-N 标题 行(张超5-1/5-2/5-3漏网源)
     toc_end = next((i for i, (t, _) in enumerate(lines) if re.match(r"^第\s*1\s*章", t)), 0)
     for t, _ in lines[toc_end:]:
