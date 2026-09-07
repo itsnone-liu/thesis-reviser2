@@ -89,6 +89,12 @@ def check_images(xml, lines):
     tcaps = [t for t, _ in lines if re.match(r"^表\s?\d{1,2}([-–]\d{1,3})?\s+\S", t) and not re.match(r"^表\s?\d[^\s]*的", t)]
     if len(tcaps) > n_tbl:
         missing.append(f"表注{len(tcaps)}>表体{n_tbl}:{tcaps[0][:14]}")
+    # 裸标题行+括号参数行(严涛4.4"路面结构层示意图"+(…图中标注…)漏网源)
+    for k in range(len(lines) - 1):
+        a, b = lines[k][0], lines[k + 1][0]
+        if re.match(r"^[\u4e00-\u9fa5]{2,14}(示意图|布置图|剖面图|大样图|流程图)$", a) and re.match(r"^\(.*图中", b):
+            missing.append("裸标题+括号说明:" + a[:14])
+            break
     # 裸行图注（丢"图"字头）: 正文区 N-N 标题 行(张超5-1/5-2/5-3漏网源)
     toc_end = next((i for i, (t, _) in enumerate(lines) if re.match(r"^第\s*1\s*章", t)), 0)
     for t, _ in lines[toc_end:]:
