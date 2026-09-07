@@ -75,15 +75,20 @@ def captions_and_refs(lines):
     return dedup, refs
 
 def check_images(xml, lines):
+    n_tbl = xml.count("<w:tbl>")
     n_draw = xml.count("</w:drawing>") + xml.count("<w:pict")
     caps, refs = captions_and_refs(lines)
     cap_ids = [c for c, _ in caps]
     missing = []
     # graphic/drawing 标签以转义文本裸躺正文(渲染器不认<graphic>标签致图全丢, 严涛漏网源)
     body = " ".join(t for t, _ in lines)
-    for tag in ("&lt;graphic", "&lt;drawing", "&lt;table"):
-        if tag in body:
-            missing.append("标签转义残留:" + tag.replace("&lt;", "<"))
+    m_esc = re.search(r"&lt;(?:graphic|drawing|table|image|figure|chart)\b", body)
+    if m_esc:
+        missing.append("标签转义残留:" + m_esc.group(0).replace("&lt;", "<"))
+    # 表注孤儿/叙述误抓防: 表注行后随"的"=叙述非注
+    tcaps = [t for t, _ in lines if re.match(r"^表\s?\d{1,2}([-–]\d{1,3})?\s+\S", t) and not re.match(r"^表\s?\d[^\s]*的", t)]
+    if len(tcaps) > n_tbl:
+        missing.append(f"表注{len(tcaps)}>表体{n_tbl}:{tcaps[0][:14]}")
     # 裸行图注（丢"图"字头）: 正文区 N-N 标题 行(张超5-1/5-2/5-3漏网源)
     toc_end = next((i for i, (t, _) in enumerate(lines) if re.match(r"^第\s*1\s*章", t)), 0)
     for t, _ in lines[toc_end:]:
