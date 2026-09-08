@@ -987,10 +987,22 @@ def canonicalize_design_table_payload(header_str: str, rows_str: str, data_str: 
                     last[tail_pos] = val
                 tail_pos += 1
     else:
-        # 无 rows 时，按固定列数分组
+        # 无 rows 时：含 | 分列符的数据按行结构解析（保留空首列——分组表组列可为空，
+        # 詹娜表5/谢朋金表7案: "||经理"空首列被压平丢弃→定长分组错位一列）
         group_size = len(headers)
         if group_size <= 0:
             return {"headers": headers, "rows": []}
+        raw_text = data_str or ""
+        if re.search(r"[|｜]", raw_text):
+            matrix = []
+            for ln in re.split(r"[;；\n]+", raw_text):
+                if not ln.strip():
+                    continue
+                cells = [c.strip() for c in re.split(r"[|｜]+", ln)]
+                while len(cells) < group_size:
+                    cells.append("")
+                matrix.append(cells[:group_size])
+            return {"headers": headers, "rows": matrix}
         for i in range(0, len(data_tokens), group_size):
             row = data_tokens[i:i + group_size]
             while len(row) < group_size:
@@ -1644,6 +1656,40 @@ def add_t(doc, ct: dict, tn: int):
                 para.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 for run in para.runs:
                     set_run_font(run, "宋体", 9)
+    # 0908加固: 分组表首列自动纵向合并 — 数据行第1列"组首行有值/后续为空"或"连续同值"(≥2行)时
+    # vMerge并回填组值, 消除"通道类型/责任中心列大量空格"(詹娜表5/谢朋金表7案)
+    try:
+        if num_cols >= 2 and len(table_data) >= 2:
+            col0 = [str(r[0]).strip() if r and len(r) > 0 else "" for r in table_data]
+            # 空值继承上方组值
+            filled, cur = [], ""
+            for v in col0:
+                if v:
+                    cur = v
+                filled.append(cur)
+            from docx.oxml.ns import qn as _qn
+            i = 0
+            while i < len(filled):
+                j = i
+                while j + 1 < len(filled) and filled[j + 1] == filled[i]:
+                    j += 1
+                if filled[i]:
+                    span = j - i + 1
+                    top = t.rows[i + 1].cells[0]  # +1: 表头占docx第0行
+                    if not col0[i]:
+                        top.text = filled[i]  # 组首行为空时回填(极少见)
+                    if span >= 2:
+                        # 后续格保持空, 由vMerge承接(merge会拼接各格内容, 预填将致重复文本)
+                        _mg = top.merge(t.rows[j + 1].cells[0])
+                        _tcPr = _mg._tc.get_or_add_tcPr()
+                        _va = _tcPr.find(_qn('w:vAlign'))
+                        if _va is None:
+                            _va = _tcPr.makeelement(_qn('w:vAlign'), {})
+                            _tcPr.append(_va)
+                        _va.set(_qn('w:val'), 'center')
+                i = j + 1
+    except Exception as _e:
+        print(f"分组表合并(忽略): {_e}")
     if source:
         p_s = doc.add_paragraph()
         p_s.alignment = WD_ALIGN_PARAGRAPH.CENTER
