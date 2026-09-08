@@ -129,6 +129,57 @@ def parse_case(no: int, wikitext: str) -> dict:
     return case
 
 
+def parse_spc_case(d: dict) -> dict:
+    """解析最高法官网详情页已清洗正文；官网本身是一手权威源。"""
+    no = int(d["no"])
+    t = re.sub(r"[ \t\r]+", " ", d.get("text", ""))
+    t = re.sub(r"\n{2,}", "\n", t)
+    name = str(d.get("name", ""))
+    # 抽取各栏目到下一个栏目；官网早期页的栏目顺序不固定，故统一找最近边界
+    labels = ("关键词", "裁判要点", "相关法条", "基本案情", "裁判结果", "裁判理由")
+    def section(label, limit=4000):
+        i = t.find(label)
+        if i < 0:
+            return ""
+        ends = [t.find(x, i + len(label)) for x in labels if x != label]
+        ends = [x for x in ends if x >= 0]
+        val = t[i + len(label):min(ends) if ends else len(t)]
+        val = re.sub(r"\s+", " ", val).strip(" \t\n:：")
+        return val[:limit]
+    kw = section("关键词", 500)
+    keywords = [x.strip() for x in re.split(r"[;；,，、\u3000\u2002/ ]+", kw) if x.strip()]
+    # 官网页标题可能含导航尾缀，先去尾缀再规范化空白
+    name = re.split(r"\s+-\s+中华人民共和国最高人民法院|\s+_\s+", name)[0].strip()
+    name = re.sub(r"\s+", "", name)
+    case = {
+        "名称": name, "案号": f"指导案例{no}号",
+        "关键词": keywords[:12], "基本事实": section("基本案情"),
+        "裁判结果": section("裁判结果", 1000),
+        "裁判理由": section("裁判理由"), "裁判要点": section("裁判要点", 2500),
+        "相关法条": section("相关法条", 600),
+        "批次": f"第{no}号(最高法指导性案例)", "来源": "最高人民法院官网",
+        "来源链接": f"https://www.court.gov.cn/shenpan/xiangqing/{d['page_id']}.html",
+    }
+    m = re.match(r"(.{2,30}?)诉(.{2,50}?)(.*?(?:纠纷)?案|裁定|决定)$", name)
+    if m:
+        case["当事人"] = f"原告:{m.group(1).strip()}; 被告:{m.group(2).strip()}"
+        case["案由"] = (m.group(3) or "")[:30]
+    else:
+        case["当事人"] = name[:40]
+        case["案由"] = name[-18:]
+    req = re.search(r"[^。]{0,40}(?:请求|诉请|提起[^。]{0,10}之诉)[^。]{0,70}", case["基本事实"])
+    case["诉讼请求"] = req.group(0).strip() if req else f"就{case['案由']}请求法院依法裁判(由基本案情归纳)"
+    case["争议焦点"] = [x.strip() for x in re.split(r"[。；]", case["裁判理由"])
+                     if 8 < len(x.strip()) < 70][:4]
+    if not case["争议焦点"] and case["裁判要点"]:
+        case["争议焦点"] = [case["裁判要点"].split("。", 1)[0][:70]]
+    case["领域"] = classify(case["案由"], name, " ".join(keywords))
+    case["tags"] = keywords + ([case["领域"]] if case["领域"] else [])
+    case["verified"] = True
+    case["verified_note"] = "最高人民法院官网详情页原文，核心栏目解析齐备"
+    return case
+
+
 def reclassify():
     """只刷新在库条目的领域/tags(taxonomy演进后), 不动其他字段。"""
     import case_taxonomy as CT
@@ -156,8 +207,8 @@ def main():
         return
     dry = "--dry" in sys.argv
     cat = load_catalogs()
-    files = sorted(glob.glob(f"{SRC_DIR}/ws_*.json"),
-                   key=lambda p: int(re.search(r"ws_(\d+)", p).group(1)))
+    files = sorted(glob.glob(f"{SRC_DIR}/ws_*.json") + glob.glob(f"{SRC_DIR}/spc_*.json"),
+                   key=lambda p: (json.load(open(p, encoding="utf-8"))["no"], p))
     stats = {"ok": 0, "skip_abolished": 0, "name_mismatch": 0,
              "empty_core": 0, "no_catalog": 0}
     for f in files:
@@ -166,7 +217,8 @@ def main():
         if no in ABOLISHED:
             stats["skip_abolished"] += 1
             continue
-        case = parse_case(no, d["wikitext"])
+        case = (parse_case(no, d["wikitext"]) if "wikitext" in d
+                else parse_spc_case(d))
         # 核心字段齐备性
         if not case["名称"] or not case["基本事实"] or not case["裁判要点"]:
             stats["empty_core"] += 1
