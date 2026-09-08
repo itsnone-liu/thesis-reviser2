@@ -145,7 +145,8 @@ def audit_docx_only(path, ptype):
     chs = []  # (title, start_idx)
     for i, p in enumerate(body):
         s = p.strip()
-        if re.match(r"^第[一二三四五六七八九十\d]+章", s) and "\t" not in s and len(s) < 32:
+        if re.match(r"^第[一二三四五六七八九十\d]+章", s) and "\t" not in s and len(s) < 80 \
+                and not re.search(r"[。；]", s):
             chs.append((s, i))
     res["stats"]["chapters"] = len(chs)
     for k, (title, si) in enumerate(chs):
@@ -203,7 +204,9 @@ def audit_docx_only(path, ptype):
         # 引用集合(全文)
         ref_re = re.compile(rf"[如见]?([图表])\s*(\d{{1,2}})(?:\s*[-–—]\s*(\d{{1,2}}))?")
         refs = set()
-        for p in body:
+        # 引用扫描范围=正文段落+表格单元格("详见表2-1"可能写在表内)
+        _corpus = list(body) + [c for tbl in tables for row in tbl for c in row if c]
+        for p in _corpus:
             for m in ref_re.finditer(p):
                 if m.group(1) != kind:
                     continue

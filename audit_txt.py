@@ -53,6 +53,10 @@ def audit_txt(text: str) -> dict:
     """审计一篇 txt 正文，返回 {级别: [问题...]}。只报告不改写。"""
     hard, warn = [], []
 
+    # 自报清单块是审计对账材料，不是正文图注/锚点；先留存原文供T10对账，再剥除做正文级检查。
+    mrep = re.search(r"\[FIGURES\]\s*\n(.*?)\[/FIGURES\]", text, re.S)
+    text = re.sub(r"\[FIGURES\]\s*.*?\[/FIGURES\]\s*", "", text, flags=re.S)
+
     # T1 标签变体
     aliases = RE_ALIAS_TAG.findall(text)
     if aliases:
@@ -82,12 +86,14 @@ def audit_txt(text: str) -> dict:
         if not any(s < seg_end and s >= m.start() - 200 for s, e in tag_lis if text[e - 1:e] != "/>") and \
            not re.search(r"<table\b", text[m.start():seg_end]):
             warn.append(f"T5孤儿表注: {m.group(0)[:22]}")
-            break
+            if sum(1 for w in warn if w.startswith("T5")) >= 3:
+                break
     for m in RE_FCAP.finditer(text):
         seg_end = _next_boundary(text, m.end())
         if not re.search(r"<(?:drawing|chart)\b", text[m.start():seg_end]):
             warn.append(f"T6孤儿图注: {m.group(0)[:22]}")
-            break
+            if sum(1 for w in warn if w.startswith("T6")) >= 3:
+                break
 
     # T7 摘要区标签残留
     mab = re.search(r"摘\s*要(.*?)关\s*键\s*词", text, re.S)
@@ -112,37 +118,47 @@ def audit_txt(text: str) -> dict:
         sec_start = max([p for p, _ in heads if p <= m.start()] + [0])
         nxt = [p for p, _ in heads if p > m.start()]
         sec_end = nxt[0] if nxt else len(text)
-        # 扩一段: 前后各300字(图可先于指代出现)
-        probe = text[max(0, sec_start - 300):min(len(text), sec_end + 300)]
-        if not (RE_ANCHOR.search(probe) or re.search(r"^\d{1,2}-\d{1,3}\s+\S", probe, re.M)):
+        # 两级探测: 近窗(前后各300字)有锚=通过; 仅节级有锚=弱告警; 全无=空承诺硬错误
+        near = text[max(0, m.start() - 300):min(len(text), m.start() + 300)]
+        wide = text[max(0, sec_start - 300):min(len(text), sec_end + 300)]
+        has_near = bool(RE_ANCHOR.search(near) or re.search(r"^\d{1,2}-\d{1,3}\s+\S", near, re.M))
+        has_wide = bool(RE_ANCHOR.search(wide) or re.search(r"^\d{1,2}-\d{1,3}\s+\S", wide, re.M))
+        if not has_near:
             ctx = text[max(0, m.start() - 20):m.start() + 26].replace("\n", " ")
-            hard.append(f"T9空承诺指代: …{ctx}… (所在节及邻段无任何图/表锚点)")
+            if has_wide:
+                warn.append(f"T9指代锚点仅节级: …{ctx}… (同节有锚但前后300字无锚)")
+            else:
+                hard.append(f"T9空承诺指代: …{ctx}… (所在节及邻段无任何图/表锚点)")
             # 不提前 break：同篇可能有多个无编号空承诺，全部报告便于一次修完
 
-    # T8 引用悬空（图注意图集合=显式图注+标签title）
+    # T8 引用悬空（图注意图集合=显式图注+标签title+标签id；机械类常用 id="5-1" 不写title编号）
     intent_figs = set(RE_REF.findall(text))
     cap_figs = set(re.sub(r"^图\s*", "", m.group(0)).split()[0] for m in RE_FCAP.finditer(text)) | set(
-        re.findall(r'<(?:drawing|chart)[^>]*?title="[^"]*?图\s?(\d{1,2}[-–]\d{1,3})', text))
+        re.findall(r'<(?:drawing|chart)[^>]*?title="[^"]*?图\s?(\d{1,2}[-–]\d{1,3})', text)) | set(
+        re.findall(r'<(?:drawing|chart)[^>]*?\bid="(\d{1,2}[-–]\d{1,3})"', text))
     dangling_f = sorted(intent_figs - cap_figs)
     if dangling_f:
         warn.append(f"T8图引用悬空: {','.join(dangling_f[:5])}")
     intent_ts = set(RE_TREF.findall(text))
     cap_ts = set(re.sub(r"^表\s*", "", m.group(0)).split()[0] for m in RE_TCAP.finditer(text)) | set(
-        re.findall(r'<table[^>]*?(?:title|caption)="[^"]*?表\s?(\d{1,2}[-–]\d{1,3})', text))
+        re.findall(r'<table[^>]*?(?:title|caption)="[^"]*?表\s?(\d{1,2}[-–]\d{1,3})', text)) | set(
+        re.findall(r'<table[^>]*?\bid="(\d{1,2}[-–]\d{1,3})"', text))
     dangling_t = sorted(intent_ts - cap_ts)
     if dangling_t:
         warn.append(f"T8表引用悬空: {','.join(dangling_t[:5])}")
 
-    # T10 自报清单对账: [FIGURES]块 vs 实际标签(自报≠实际=立即定位)
-    mrep = re.search(r"\[FIGURES\]\n(.*?)\[/FIGURES\]", text, re.S)
+    # T10 自报清单对账: [FIGURES]块(剥除前留存) vs 实际标签(自报≠实际=立即定位)
     if mrep:
         claimed = re.findall(r"^(图|表)\s?(\d{1,2}[-–]\d{1,3})", mrep.group(1), re.M)
         actual_tag_figs = set(re.findall(r'<(?:drawing|chart)[^>]*?title="[^"]*?图\s?(\d{1,2}[-–]\d{1,3})', text))
         actual_tag_tabs = set(re.findall(r'<table[^>]*?(?:title|caption)="[^"]*?表\s?(\d{1,2}[-–]\d{1,3})', text))
         actual_cap_figs = set(re.sub(r"^图\s*", "", m.group(0)).split()[0] for m in RE_FCAP.finditer(text))
         actual_cap_tabs = set(re.sub(r"^表\s*", "", m.group(0)).split()[0] for m in RE_TCAP.finditer(text))
-        actual_figs = actual_tag_figs | actual_cap_figs
-        actual_tabs = actual_tag_tabs | actual_cap_tabs
+        # 标签id="5-1"也是实际存在的证据(机械类常用)
+        actual_id_figs = set(re.findall(r'<(?:drawing|chart)[^>]*?\bid="(\d{1,2}[-–]\d{1,3})"', text))
+        actual_id_tabs = set(re.findall(r'<table[^>]*?\bid="(\d{1,2}[-–]\d{1,3})"', text))
+        actual_figs = actual_tag_figs | actual_cap_figs | actual_id_figs
+        actual_tabs = actual_tag_tabs | actual_cap_tabs | actual_id_tabs
         claimed_set = {(kind, num) for kind, num in claimed}
         for kind, num in claimed:
             actual = actual_figs if kind == "图" else actual_tabs
