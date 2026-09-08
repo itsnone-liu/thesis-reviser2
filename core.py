@@ -2690,8 +2690,7 @@ def finalize_docx(docx_path: str, update=None):
                 chapter1_idx = i
                 break
     if chapter1_idx < 0:
-        print("[跳过finalize] 未找到第1章")
-        return
+        raise RuntimeError("finalize_docx失败：未找到正文第1章，禁止继续交付")
 
     def _apply_toc_line(p, heading_text: str, sec_page: int):
         p.clear()
@@ -3410,6 +3409,12 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
     # 最终排版（分节符+页码+页脚）- 放到最后
     update("正在处理最终排版（分节符/页码/页脚）...", 95)
     finalize_docx(docx_path, update=lambda m, p: update(m, 95 + int(p * 0.05)))
+    # finalize 后立即重新打开，确保输出仍是可读的有效DOCX；不能只相信 save() 返回。
+    try:
+        _postflight = Document(docx_path)
+        _postflight.element.body
+    except Exception as exc:
+        raise RuntimeError(f"DOCX后置验收失败，禁止交付: {exc}") from exc
 
     # ===== 渲染回执：写JSON旁车文件 + 控制台摘要（失败可见，不再静默） =====
     receipt["file"] = docx_path

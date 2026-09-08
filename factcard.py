@@ -62,8 +62,9 @@ def build_fact_card(accumulated: str, paper_type: str) -> str:
             rows = _generic_param_rows(accumulated)
             if rows:
                 return _CARD_HEADER + "\n".join(rows) + "\n"
-    except Exception:
-        pass
+    except Exception as exc:
+        # 生成质量闸门不能把抽取异常伪装成“无事实”。调用方必须记录并决定是否阻断。
+        raise RuntimeError(f"factcard构建失败: {type(exc).__name__}: {exc}") from exc
     return ""
 
 
@@ -116,6 +117,13 @@ def checkpoint_chapter(accumulated: str, paper_type: str) -> list:
             rep = validate_mechanical_spec(resolve_article_spec(accumulated))
             return [f"{e.get('key')}: {e.get('message', '')}"[:60]
                     for e in rep.get("errors", [])]
-    except Exception:
-        pass
+        # 管理/设计/法学等没有专业工程抽取器时，仍执行通用同名参数冲突检查。
+        # 只报告（不自动改写），避免把年度变化、方案对比误当成固定参数。
+        from tagguard import check_numeric_consistency
+        _unused, rep = check_numeric_consistency(accumulated, auto_fix=False)
+        return [f"{c.get('name')}: {c.get('values')}"[:100]
+                for c in (rep or {}).get('conflicts', [])]
+    except Exception as exc:
+        # 检查异常不能伪装成“无冲突”；上层据此阻断或标记 unavailable。
+        raise RuntimeError(f"章节一致性检查失败: {type(exc).__name__}: {exc}") from exc
     return []

@@ -47,8 +47,14 @@ def render(txt_path: str, docx_path: str, paper_type: str = "管理",
             raw_text = f.read()
         mech_blocks = extract_mech_json_blocks(raw_text)
         full_text = strip_mech_json_blocks(raw_text)
-        # 预渲染审计层：hard 问题（标签变体/LaTeX残留/裸行图注等）直接阻断，
-        # 绝不带伤渲染（审计只报告不改写；改写是下面 tagguard 的职责）
+        # 标签守卫先规范化可修复的标签；随后对“实际送入渲染器”的文本做硬审计。
+        # 旧顺序先审计再修复，会把 draing/缺闭合等可确定修复的问题直接阻断，
+        # 同时 tagguard 异常被吞掉会造成“看似继续、实际漏图”。
+        try:
+            from tagguard import audit_and_repair
+            full_text, _g = audit_and_repair(full_text)
+        except Exception as exc:
+            raise RuntimeError(f"标签守卫失败，阻断渲染: {exc}") from exc
         try:
             from audit_txt import audit_txt as _audit_txt_body
             _r = _audit_txt_body(full_text)
@@ -56,15 +62,8 @@ def render(txt_path: str, docx_path: str, paper_type: str = "管理",
                 raise ValueError(
                     "txt预渲染审计未通过(hard): " + "; ".join(_r["hard"]) +
                     " — 请先修复txt（audit_txt.py 报告）再渲染")
-        except ImportError:
-            pass
-        # 标签守卫前置：先规范化标签（补缺括号/错拼等），生图与排版用同一份文本，
-        # 否则生图提取器可能漏掉格式瑕疵的drawing → 排版时才发现缺图
-        try:
-            from tagguard import audit_and_repair
-            full_text, _g = audit_and_repair(full_text)
-        except Exception:
-            pass
+        except ImportError as exc:
+            raise RuntimeError(f"TXT审计模块不可用，阻断渲染: {exc}") from exc
         drawings = extract_drawings_from_text(full_text)
         drawings = merge_mech_json_into_drawings(drawings, mech_blocks)
 

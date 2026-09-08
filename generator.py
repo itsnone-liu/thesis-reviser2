@@ -1450,7 +1450,9 @@ def _call_llm_checked(prompt: str, max_tokens: int, min_chars: int = 200,
             hint = f"为空" if not content else f"仅{len(content)}字且未收尾" if not ends_ok else f"仅{len(content)}字"
             print(f"  [产出检查] {label}{hint}，重试一次...")
     if not content:
-        print(f"  [产出检查] {label}两次生成为空，保留空内容")
+        raise RuntimeError(f"{label}两次生成均为空，阻断交付")
+    if len(content) < min_chars and not ends_ok:
+        raise RuntimeError(f"{label}产出疑似截断({len(content)}字且未收尾)，阻断交付")
     return content
 
 
@@ -1499,14 +1501,19 @@ def _generate_manage(profile: dict, update) -> str:
         try:
             from factcard import build_fact_card
             _card = build_fact_card(f"摘要\n{abstract}\n" + "\n".join(chapters_content.values()), "管理")
-        except Exception:
-            _card = ""
+        except Exception as exc:
+            raise RuntimeError(f"管理事实卡生成失败: {exc}") from exc
         prompt = mg_chapter_prompt(name, num, profile) + _card + FIGURES_DECL_RULE
         content = _call_llm_checked(prompt, max_tokens=MG_WORD_LIMITS.get(name, 1000) * 2,
                                     label=f"管理·第{num}章{name}")
         content = clean_text(content)
         # 去除章节编号前缀
         content = re.sub(r'^第[一二三四五六\d]+章.*?\n', '', content).strip()
+        # 管理类也必须有真实章节检查点；检查异常或未消除冲突均阻断交付。
+        from factcard import checkpoint_chapter
+        _errs = checkpoint_chapter("摘要\n" + abstract + "\n" + "\n".join(chapters_content.values()) + "\n" + content, "管理")
+        if _errs:
+            raise RuntimeError(f"管理第{num}章检查点发现未解决冲突: {_errs}")
         chapters_content[name] = content
 
     # 4. 参考文献
@@ -1577,13 +1584,17 @@ def _generate_design(profile: dict, update) -> str:
         try:
             from factcard import build_fact_card
             _card = build_fact_card(f"摘要\n{abstract}\n" + "\n".join(b for _, b in chapters_content), "设计")
-        except Exception:
-            _card = ""
+        except Exception as exc:
+            raise RuntimeError(f"设计事实卡生成失败: {exc}") from exc
         prompt = dj_chapter_prompt(name, num, profile, outline) + _card + FIGURES_DECL_RULE
         content = _call_llm_checked(prompt, max_tokens=SJ_WORD_LIMITS.get(name, 1000) * 2,
                                     label=f"设计·第{num}章{name}")
         content = clean_text(content)
         content = re.sub(r'^第[一二三四五六\d]+章.*?\n', '', content).strip()
+        from factcard import checkpoint_chapter
+        _errs = checkpoint_chapter("摘要\n" + abstract + "\n" + "\n".join(b for _, b in chapters_content) + "\n" + content, "设计")
+        if _errs:
+            raise RuntimeError(f"设计第{num}章检查点发现未解决冲突: {_errs}")
         chapters_content.append((name, content))
 
     # 5. 图纸补齐
@@ -1750,8 +1761,8 @@ def _generate_mechanical(profile: dict, update) -> str:
         try:
             from factcard import build_fact_card
             _card = build_fact_card(f"摘要\n{abstract}\n" + "\n".join(b for _, b, _ in chapters_content), "机械")
-        except Exception:
-            _card = ""
+        except Exception as exc:
+            raise RuntimeError(f"机械事实卡生成失败: {exc}") from exc
         prompt = mc_chapter_prompt(name, num, profile, outline, machine_spec) + _card + FIGURES_DECL_RULE
         content = _call_llm_checked(prompt, max_tokens=MC_WORD_LIMITS.get(name, 1000) * 3,
                                     label=f"机械·第{num}章{name}")
@@ -1775,9 +1786,9 @@ def _generate_mechanical(profile: dict, update) -> str:
                 if len(errs2) < len(errs):
                     body, chapter_json, errs = rbody, rjson, errs2
                 if errs:
-                    print(f"  [闸门] 第{num}章遗留冲突(人工关注): {errs}")
-        except ImportError:
-            pass
+                    raise RuntimeError(f"机械第{num}章检查点重写后仍有冲突: {errs}")
+        except ImportError as exc:
+            raise RuntimeError(f"机械章节检查点不可用: {exc}") from exc
         chapters_content.append((name, body, chapter_json))
 
     update("正在生成参考文献...", 93)
@@ -1866,7 +1877,7 @@ def _generate_civil(profile: dict, update) -> str:
                 content = retry
                 errs = errs2
             if errs:
-                print(f"  [检查点] 第{num}章遗留冲突(人工关注): {errs}")
+                raise RuntimeError(f"土木第{num}章检查点重写后仍有冲突: {errs}")
         acc += f"\n第{num}章 {name}\n{content}"
         chapters_content.append((name, content))
 
