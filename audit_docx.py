@@ -222,9 +222,12 @@ def audit_pair(txt_path: str, docx_path: str, paper_type: str = "管理") -> dic
         row["images_in_docx"] = docxml.count("</w:drawing>") + docxml.count("<w:pict")
         row["tables_in_docx"] = docxml.count("<w:tbl>")
 
-        # 渲染回执（若有，直接引用其失败明细）
+        # 渲染回执是交付契约：缺失、损坏或非pass不得被静默忽略。
         receipt_path = docx_path + ".report.json"
-        if os.path.exists(receipt_path):
+        if not os.path.exists(receipt_path):
+            row["verdict"] = "❌"
+            warns.append("缺少渲染回执，无法证明产物通过验收")
+        else:
             try:
                 with open(receipt_path, "r", encoding="utf-8") as f:
                     rc = json.load(f)
@@ -236,8 +239,12 @@ def audit_pair(txt_path: str, docx_path: str, paper_type: str = "管理") -> dic
                     # 【护栏】降级=内容在DOCX中残缺, 不允许带病交付 → 阻断
                     row["verdict"] = "❌"
                     warns.append(f"回执降级/失败chart{len(c_['failed'])}·table{len(t_['failed'])}(阻断:内容残缺)")
-                if d_["missing_image"]:
-                    warns.append(f"占位图{len(d_['missing_image'])}张")
+                if d_["missing_image"] or d_.get("placeholder"):
+                    row["verdict"] = "❌"
+                    warns.append(f"占位图{len(d_.get('missing_image', [])) + d_.get('placeholder', 0)}张")
+                if rc.get("verdict") not in ("pass", "✅"):
+                    row["verdict"] = "❌"
+                    warns.append(f"回执验收结论:{rc.get('verdict', '缺失')}")
                 cons = rc.get("consistency")
                 if cons and cons.get("conflicts"):
                     row["consistency"] = "; ".join(
@@ -245,8 +252,9 @@ def audit_pair(txt_path: str, docx_path: str, paper_type: str = "管理") -> dic
                     unfixed = sum(1 for c in cons["conflicts"] if not c.get("fixed"))
                     if unfixed:
                         warns.append(f"数值冲突未修{unfixed}")
-            except Exception:
-                pass
+            except Exception as exc:
+                row["verdict"] = "❌"
+                warns.append(f"渲染回执损坏:{type(exc).__name__}")
 
         # 空白图检测（≥99%近白的真白板才报警）
         for m in media:
