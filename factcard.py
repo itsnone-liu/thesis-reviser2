@@ -68,16 +68,47 @@ def build_fact_card(accumulated: str, paper_type: str) -> str:
     return ""
 
 
+def _scope_of(text: str, pos: int) -> str:
+    """取参数出现点的语境作用域: 年份/方案/主体。同作用域才可互相比较锁定。
+    多年度序列(2020收入X, 2021收入Y)曾被"多值取首值"错锁单值——作用域化后
+    分年份列出, 不再诱导LLM把2021年数据写成2020年的。
+    年份/方案/主体取**本句内**最近的: 中文财经惯用"2020年...收入X,人数Y"(年份
+    前缀管辖全句), 先向前在本句找, 找不到再向后; 邻句年份不越界(。；\n为界)。"""
+    lo = max(0, pos - 80)
+    win = text[lo:pos + 80]
+    rel = pos - lo
+    # 句界: 窗口内最后一次句末标点(在匹配点之前)到匹配点=本句前半
+    sent_start = max(win.rfind("。", 0, rel), win.rfind("；", 0, rel), win.rfind("\n", 0, rel))
+    sent_end_pat = re.compile(r"[。；\n]")
+    sent_end_m = sent_end_pat.search(win, rel)
+    sent_end = sent_end_m.start() if sent_end_m else len(win)
+    cands = []
+
+    def _collect(pattern, fmt):
+        for m in re.finditer(pattern, win):
+            if sent_start < m.start() < sent_end:
+                cands.append((abs(m.start() - rel), fmt(m)))
+
+    _collect(r"(20\d{2})\s*年", lambda m: f"{m.group(1)}年")
+    if not cands:
+        _collect(r"方案[一二三四五六七八九十\d]", lambda m: m.group(0))
+    if not cands:
+        _collect(r"([\u4e00-\u9fff]{2,10}(?:公司|集团|企业|项目|银行|工厂))", lambda m: m.group(1))
+    return min(cands)[1] if cands else ""
+
+
 def _generic_param_rows(accumulated: str, skip: set = None, max_rows: int = 14) -> list:
     """通用参数抽取(零LLM): 扫tagguard._PARAM_DICT各专业参数在accumulated中的取值,
-    单值→直接列; 多值→取首现值+标注曾出现的其他值(提示LLM以首值为准)。
+    单值→直接列; 多值→按年份/方案/主体作用域分组, 跨作用域分别列出(不锁错值),
+    同作用域多值→取首现值+标注漂移。
     skip: 已由专业抽取器覆盖的参数名(避免重复行)。"""
     skip = skip or set()
     try:
         from tagguard import _PARAM_DICT, _parse_num
     except Exception:
         return []
-    seen = {}
+    scoped = {}    # pname → {scope: [vals]}
+    noscope = {}   # pname → [vals] (无作用域语境)
     for pname, pat in _PARAM_DICT:
         if pname in skip:
             continue
@@ -92,9 +123,27 @@ def _generic_param_rows(accumulated: str, skip: set = None, max_rows: int = 14) 
                 v = None
             if v is None:
                 v = raw
-            seen.setdefault(pname, []).append(f"{v:g}" if isinstance(v, float) else str(v))
+            vs = f"{v:g}" if isinstance(v, float) else str(v)
+            scope = _scope_of(accumulated, m.start())
+            if scope:
+                scoped.setdefault(pname, {}).setdefault(scope, []).append(vs)
+            else:
+                noscope.setdefault(pname, []).append(vs)
     rows = []
-    for pname, vals in seen.items():
+    for pname in list(scoped) + [p for p in noscope if p not in scoped]:
+        if pname in scoped:
+            # 有作用域: ≤4个作用域逐个列出; 更多视为分对象数据(多企业对比),不锁
+            scopes = scoped[pname]
+            if len(scopes) > 4:
+                continue
+            for sc, vals in sorted(scopes.items()):
+                uniq = list(dict.fromkeys(vals))
+                if len(uniq) == 1:
+                    rows.append(f"- {pname}({sc}): {uniq[0]}")
+                elif len(uniq) <= 4:
+                    rows.append(f"- {pname}({sc}): {uniq[0]} (注意:{sc}语境曾出现{','.join(uniq[1:])})")
+            continue
+        vals = noscope[pname]
         uniq = list(dict.fromkeys(vals))
         if len(uniq) == 1:
             rows.append(f"- {pname}: {uniq[0]}")
