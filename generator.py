@@ -2054,8 +2054,8 @@ def _generate_law(profile: dict, update) -> str:
         try:
             from factcard import build_fact_card
             _card = build_fact_card(f"摘要\n{abstract}\n" + "\n".join(b for _, _, b in chapters_content), "法学")
-        except Exception:
-            _card = ""
+        except Exception as exc:
+            raise RuntimeError(f"法学事实卡生成失败: {exc}") from exc
         if law_type == "T2":
             prompt = lw_chapter_prompt_t2(title, cluster, name, num, limit, prev) + _card + FIGURES_DECL_RULE
         else:
@@ -2064,6 +2064,10 @@ def _generate_law(profile: dict, update) -> str:
                                     label=f"法学·第{num}章{name}")
         content = clean_text(content)
         content = re.sub(r'^第[一二三四五六\d]+章.*?\n', '', content).strip()
+        from factcard import checkpoint_chapter
+        _errs = checkpoint_chapter("摘要\n" + abstract + "\n" + "\n".join(b for _, _, b in chapters_content) + "\n" + content, "法学")
+        if _errs:
+            raise RuntimeError(f"法学第{num}章检查点发现冲突: {_errs}")
         chapters_content.append((name, num, content))
         prev = f"{name}: " + content[:800]
 
