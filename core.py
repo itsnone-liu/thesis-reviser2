@@ -2745,22 +2745,36 @@ def finalize_docx(docx_path: str, update=None):
             heading = t.split('\t')[0].strip() if '\t' in t else t
             toc_headings.append(heading)
 
-    # 生成临时PDF计算页码
+    # 生成临时PDF计算页码（外部命令结果必须入回执：失败不得静默回退旧页码）
+    fin_report = {"status": "ok", "page_method": "pdf", "commands": [], "footer": "ok", "errors": []}
     tag = uuid.uuid4().hex[:8]
     temp_docx = docx_path.replace('.docx', f'_temp_{tag}.docx')
     doc.save(temp_docx)
     update("正在用LibreOffice渲染PDF计算页码...", 95)
     pdf_path = os.path.join(os.path.dirname(temp_docx) or '.', f'_temp_{tag}.pdf')
-    subprocess.run(['libreoffice', '--headless', '--convert-to', 'pdf',
-                    temp_docx, '--outdir', os.path.dirname(pdf_path)],
-                   capture_output=True, text=True, timeout=300)
+    try:
+        r_lo = subprocess.run(['libreoffice', '--headless', '--convert-to', 'pdf',
+                               temp_docx, '--outdir', os.path.dirname(pdf_path)],
+                              capture_output=True, text=True, timeout=300)
+        fin_report["commands"].append({"cmd": "libreoffice", "rc": r_lo.returncode})
+    except FileNotFoundError:
+        fin_report["commands"].append({"cmd": "libreoffice", "rc": None, "error": "工具不存在"})
+    except subprocess.TimeoutExpired:
+        fin_report["commands"].append({"cmd": "libreoffice", "rc": None, "error": "超时"})
     expected = temp_docx.replace('.docx', '.pdf')
     if os.path.exists(expected):
         os.rename(expected, pdf_path)
+    if not os.path.exists(pdf_path):
+        # PDF计算失败=目录页码只能沿用占位/旧值，必须显式降级，不许伪装精确页码
+        fin_report["status"] = "degraded"
+        fin_report["page_method"] = "fallback"
+        fin_report["errors"].append("LibreOffice PDF转换失败，目录页码未经验证")
+        print("  [finalize降级] PDF转换失败，目录页码为估算值")
 
     heading_abs_pages = {}
     if os.path.exists(pdf_path):
         result = subprocess.run(['pdfinfo', pdf_path], capture_output=True, text=True)
+        fin_report["commands"].append({"cmd": "pdfinfo", "rc": result.returncode})
         num_pages = 0
         for line in result.stdout.split('\n'):
             if line.startswith('Pages'):
@@ -2779,6 +2793,8 @@ def finalize_docx(docx_path: str, update=None):
         for pg in range(start_pg, num_pages + 1):
             r = subprocess.run(['pdftotext', '-f', str(pg), '-l', str(pg), pdf_path, '-'],
                                capture_output=True, text=True)
+            if r.returncode != 0:
+                fin_report["errors"].append(f"pdftotext第{pg}页失败rc={r.returncode}")
             text_flat = re.sub(r'\s+', '', r.stdout)
             for h in toc_headings:
                 if h in heading_abs_pages:
@@ -2913,11 +2929,14 @@ def finalize_docx(docx_path: str, update=None):
             fc2.set(qn('w:fldCharType'), 'end')
             run._element.append(fc2)
     except Exception as e:
+        fin_report["footer"] = "failed"
+        fin_report["errors"].append(f"页脚写入失败:{type(e).__name__}")
         print(f"页脚处理异常: {e}")
     doc.save(docx_path)
     if os.path.exists(temp_docx):
         os.remove(temp_docx)
     update("最终排版完成", 100)
+    return fin_report
 
 
 # ==================== 诊断报告 ====================
@@ -3429,7 +3448,10 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
     update("DOCX生成完毕！", 98)
     # 最终排版（分节符+页码+页脚）- 放到最后
     update("正在处理最终排版（分节符/页码/页脚）...", 95)
-    finalize_docx(docx_path, update=lambda m, p: update(m, 95 + int(p * 0.05)))
+    fin_report = finalize_docx(docx_path, update=lambda m, p: update(m, 95 + int(p * 0.05)))
+    if not isinstance(fin_report, dict):
+        raise RuntimeError("finalize_docx未返回结构化报告，渲染状态不可证明")
+    receipt["finalize"] = fin_report
     # finalize 后立即重新打开，确保输出仍是可读的有效DOCX；不能只相信 save() 返回。
     try:
         _postflight = Document(docx_path)
@@ -3445,8 +3467,7 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
     receipt["file"] = docx_path
     try:
         report_path = docx_path + ".report.json"
-        with open(report_path, "w", encoding="utf-8") as f:
-            json.dump(receipt, f, ensure_ascii=False, indent=1)
+        # 判定必须在写盘之前完成：否则盘上回执永远缺 verdict/render_status
         c_, t_, d_ = receipt["charts"], receipt["tables"], receipt["drawings"]
         flags = []
         if c_["failed"]:
@@ -3455,6 +3476,8 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
             flags.append(f"表格降级{len(t_['failed'])}")  # 质量门控/异常→兜底渲染
         if d_["missing_image"]:
             flags.append(f"图纸缺图{len(d_['missing_image'])}")
+        if receipt.get("finalize", {}).get("status") != "ok":
+            flags.append(f"finalize降级({receipt.get('finalize', {}).get('page_method')})")
         cons = receipt.get("consistency")
         if cons and cons.get("conflicts"):
             unfixed = sum(1 for c in cons["conflicts"] if not c.get("fixed"))
@@ -3466,14 +3489,22 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
         else:
             receipt["render_status"] = "ok"
             receipt["verdict"] = "pass"
+        # 原子写入：半截JSON比缺JSON更具迷惑性，必须一次到位
+        _tmp_report = report_path + ".tmp"
+        with open(_tmp_report, "w", encoding="utf-8") as f:
+            json.dump(receipt, f, ensure_ascii=False, indent=1, default=str)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(_tmp_report, report_path)
         status = "⚠️ " + " / ".join(flags) if flags else "✅ 全部渲染成功"
         print(f"  [渲染回执] chart {c_['ok']}/{c_['total']} | table {t_['ok']}/{t_['total']}"
-              f" | drawing {d_['ok']}/{d_['total']} → {status}")
+              f" | drawing {d_['ok']}/{d_['total']} → {status} verdict={receipt['verdict']}")
         if cons and cons.get("conflicts"):
             print(f"  [一致性] 扫描{cons['params_scanned']}项, 冲突{len(cons['conflicts'])}, "
                   f"自动修正{cons['fixed_count']}")
         print(f"  [渲染回执] 已写入 {report_path}")
     except Exception as e:
-        print(f"渲染回执写入失败: {e}")
+        # 回执是交付契约：写不进回执=无法证明产物合格，必须失败而不是只打印
+        raise RuntimeError(f"渲染回执写入失败，禁止交付: {e}") from e
     return receipt
     update("DOCX生成完毕！", 100)
