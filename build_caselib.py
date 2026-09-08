@@ -189,6 +189,12 @@ def reclassify():
             case = json.load(open(path, encoding="utf-8"))
         except Exception:
             continue
+        # 官网详情页自身是一手核验源：旧条目若已带官方链接且核心字段完整，
+        # 只提升 verified/说明，不重写人工内容。
+        if (case.get("来源") == "最高人民法院官网" and case.get("来源链接", "").startswith("https://www.court.gov.cn/")
+                and case.get("基本事实") and case.get("裁判要点")):
+            case["verified"] = True
+            case["verified_note"] = "最高人民法院官网详情页原文，案号与核心栏目齐备"
         agg = CT.classify(case.get("案由", ""), case.get("名称", ""),
                           " ".join(case.get("关键词", []) or []))
         if agg and case.get("领域") != agg:
