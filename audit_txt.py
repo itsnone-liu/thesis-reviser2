@@ -139,8 +139,8 @@ def audit_txt(text: str) -> dict:
         claimed = re.findall(r"^(图|表)\s?(\d{1,2}[-–]\d{1,3})", mrep.group(1), re.M)
         actual_tag_figs = set(re.findall(r'<(?:drawing|chart)[^>]*?title="[^"]*?图\s?(\d{1,2}[-–]\d{1,3})', text))
         actual_tag_tabs = set(re.findall(r'<table[^>]*?(?:title|caption)="[^"]*?表\s?(\d{1,2}[-–]\d{1,3})', text))
-        actual_cap_figs = set(RE_FCAP.findall(text))
-        actual_cap_tabs = set(RE_TCAP.findall(text))
+        actual_cap_figs = set(re.sub(r"^图\s*", "", m.group(0)).split()[0] for m in RE_FCAP.finditer(text))
+        actual_cap_tabs = set(re.sub(r"^表\s*", "", m.group(0)).split()[0] for m in RE_TCAP.finditer(text))
         actual_figs = actual_tag_figs | actual_cap_figs
         actual_tabs = actual_tag_tabs | actual_cap_tabs
         claimed_set = {(kind, num) for kind, num in claimed}
