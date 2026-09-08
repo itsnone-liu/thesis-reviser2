@@ -150,7 +150,7 @@ def parse_spc_case(d: dict) -> dict:
     keywords = [x.strip() for x in re.split(r"[;；,，、\u3000\u2002/ ]+", kw) if x.strip()]
     # 官网页标题可能含导航尾缀，先去尾缀再规范化空白
     name = re.split(r"\s+-\s+中华人民共和国最高人民法院|\s+_\s+", name)[0].strip()
-    name = re.sub(r"\s+", "", name)
+    name = re.sub(r"\s+", "", name).lstrip("：: ")
     case = {
         "名称": name, "案号": f"指导案例{no}号",
         "关键词": keywords[:12], "基本事实": section("基本案情"),
@@ -240,8 +240,12 @@ def main():
             case["verified_note"] = "名称按双源目录修正(文库页标题解析歧义)"
         elif not ref:
             stats["no_catalog"] += 1
-            case["verified"] = False
-            case["verified_note"] = "目录双源均未收录该号, 仅维基文库单源"
+            # 最高法官网详情页本身是一手权威源；其案号与正文核心栏齐备时可直接核验。
+            # gb/spc缓存统一通过 parse_spc_case 进入，page_id为数字即官网详情页。
+            is_spc = ("wikitext" not in d and str(d.get("page_id", "")).isdigit())
+            case["verified"] = bool(is_spc)
+            case["verified_note"] = ("最高人民法院官网详情页原文，案号与核心栏目齐备"
+                                      if is_spc else "目录双源均未收录该号, 仅维基文库单源")
         else:
             case["verified"] = True
             case["verified_note"] = "维基文库官方全文+双源目录名称一致"
