@@ -2586,14 +2586,16 @@ def generate_all_images(drawings: list, save_dir: str, max_workers: int = 2) -> 
     return result
 
 
-def add_drawing_image(doc, drawing: dict, img_path: str, dn: int):
-    """向docx中添加设计图纸图片"""
+def add_drawing_image(doc, drawing: dict, img_path: str, dn: int, skip_title: bool = False):
+    """向docx中添加设计图纸图片。
+    skip_title: 正文紧邻处已有同款图注行时跳过插入title(防图注×2, 0908修复)"""
     title = drawing.get("title", f"设计图{dn}")
     desc = drawing.get("description", "")
-    p_title = doc.add_paragraph()
-    p_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    r = p_title.add_run(title)  # 直接用LLM给的title原名，不再加"图{dn}"前缀
-    set_run_font(r, "宋体", 10, bold=True)
+    if not skip_title:
+        p_title = doc.add_paragraph()
+        p_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        r = p_title.add_run(title)  # 直接用LLM给的title原名，不再加"图{dn}"前缀
+        set_run_font(r, "宋体", 10, bold=True)
     try:
         doc.add_picture(img_path, width=Cm(14))
     except Exception as e:
@@ -2988,6 +2990,9 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
     with open(txt_path, "r", encoding="utf-8") as f:
         full_text = f.read()
     full_text = strip_mech_json_blocks(full_text)
+    # 0908修复: 剥离[FIGURES]自报清单块(审计对账用, 不入正文——此前被当普通文本
+    # 渲染导致图注×2, 何晋案: 10种图/表注重复)
+    full_text = re.sub(r'\[FIGURES\]\s*.*?\[/FIGURES\]\s*', '', full_text, flags=re.S)
     txt_title = extract_title_from_txt(full_text)
     if txt_title:
         full_text = strip_title_from_txt(full_text)
@@ -3054,6 +3059,7 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
         build_cover(doc, cover)  # 默认空封面，后续可补录
 
     cn, tn, dn = 0, 0, 0
+    _prev_text_tail = []  # 0908修复: 上一个text part的末尾行(供drawing图注去重判断)
     next_page_break = False
     need_page_break = False
     page_break_applied = False
@@ -3137,10 +3143,21 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
         elif pt == "drawing":
             dn += 1
             receipt["drawings"]["total"] += 1
+            # 0908修复: 正文紧邻处(前一个text part末尾3行)已有同款图注 → 不再插title(防图注×2)
+            _skip_title = False
+            if _prev_text_tail:
+                _tit = re.sub(r"\s+", "", str(ct.get("title", "")))
+                for _ln in _prev_text_tail[-3:]:
+                    _lns = re.sub(r"\s+", "", _ln)
+                    if _tit and (_tit in _lns or
+                                 re.match(r"^图\d{1,2}(-\d{1,2})?\b", _lns) and _lns[:6] == _tit[:6]):
+                        _skip_title = True
+                        break
+            _prev_text_tail = []
             try:
                 img_path = _lookup_drawing_image(ct, drawing_images)
                 if img_path:
-                    add_drawing_image(doc, ct, img_path, dn)
+                    add_drawing_image(doc, ct, img_path, dn, skip_title=_skip_title)
                     receipt["drawings"]["ok"] += 1
                 else:
                     img_key = str(ct.get("seq") or ct.get("id") or "")
@@ -3149,7 +3166,7 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
                         {"title": ct.get("title", ""), "key": img_key})
                     ph = _make_placeholder_image(ct.get("title", f"设计图{dn}"))
                     try:
-                        add_drawing_image(doc, ct, ph, dn)
+                        add_drawing_image(doc, ct, ph, dn, skip_title=_skip_title)
                         receipt["drawings"]["placeholder"] += 1
                     finally:
                         try:
@@ -3171,6 +3188,10 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
                         continue
                 if not line:
                     continue
+                # 0908修复: 记录文本行供紧随drawing的图注去重
+                _prev_text_tail.append(line)
+                if len(_prev_text_tail) > 8:
+                    _prev_text_tail.pop(0)
                 # 分页标记
                 if line == '---PAGE_BREAK---':
                     # 如果在目录收集中，先渲染目录

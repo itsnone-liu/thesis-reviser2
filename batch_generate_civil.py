@@ -226,7 +226,15 @@ def generate_paper(name, sid, title, batch, output_dir, teacher=""):
             extra_rules = extra_rules.replace("{foundation}", spec.get("foundation", ""))
             extra_rules = extra_rules.replace("{critical_params}", json.dumps(spec.get("critical_params", []), ensure_ascii=False))
             extra_rules = extra_rules.replace("{duration}", str(spec.get("duration", "")))
-            
+            # 0908修复: 补齐漏锁字段(总高/层高/柱网/风雪压/材料等级)——此前只有7个占位符,
+            # 平面尺寸/高度/面积在章间漂移(何晋案: 54×18.6/36×19.2/50.4×21.6三套并存)
+            for _k in ("height", "floor_height", "grid_size", "wind_load",
+                       "snow_load", "concrete_grade", "steel_grade"):
+                extra_rules = extra_rules.replace("{" + _k + "}", str(spec.get(_k, "第1章确定后全文锁定")))
+            # 全量参数总表(唯一真值, 每章可见)
+            _tbl = "\n".join(f"  - {k}: {v}" for k, v in spec.items() if v not in ("", [], None))
+            extra_rules += "\n\n【工程参数总表 - 唯一真值, 任何章节不得偏离】\n" + _tbl
+
             # 第1章也注入project_spec约束，让LLM从源头统一参数
             prompt = prompt + "\n\n" + extra_rules
         
@@ -423,6 +431,22 @@ def generate_paper(name, sid, title, batch, output_dir, teacher=""):
 
 def render_to_docx(profile, full_text, tables, output_dir, name, sid):
     """渲染DOCX — 完全复用原代码的txt_to_docx_safe管道"""
+    # 0908修复: 自报对账 — [FIGURES]清单 vs 实际drawing/table标签
+    # (何晋案: 图2-1正立面图在自报清单里但正文无标签 → 缺图)
+    _fig_blocks = re.findall(r"\[FIGURES\]\s*(.*?)\[/FIGURES\]", full_text, re.S)
+    _declared = set()
+    for _blk in _fig_blocks:
+        for _ln in _blk.split("\n"):
+            _m = re.match(r"^\s*([图表]\s*\d{1,2}(?:-\d{1,2})?)\s+\S", _ln)
+            if _m:
+                _declared.add(re.sub(r"\s+", "", _m.group(1)))
+    _actual = set()
+    for _m in re.finditer(r'<(?:drawing|table)\b[^>]*?title="([图表]\s*\d{1,2}(?:-\d{1,2})?)', full_text):
+        _actual.add(re.sub(r"\s+", "", _m.group(1)))
+    _missing = sorted(_declared - _actual)
+    if _missing:
+        print(f"  ⚠ [自报对账] 自报但无标签: {_missing} — 该图将缺失(需补drawing标签)")
+
     # 1. 保存TXT
     txt_path = os.path.join(output_dir, f"{name}_{sid}.txt")
     with open(txt_path, "w", encoding="utf-8") as f:

@@ -79,11 +79,20 @@ CONSISTENCY_RULE = """【数据一致性铁律 - 必须严格遵守】
    - 地基条件：{foundation}
    - 关键参数：{critical_params}
    - 工期：{duration}
+   - 建筑总高度：{height}
+   - 层高：{floor_height}
+   - 柱网尺寸：{grid_size}
+   - 基本风压(kN/m²)：{wind_load}
+   - 基本雪压(kN/m²)：{snow_load}
+   - 混凝土等级：{concrete_grade}
+   - 钢筋等级：{steel_grade}
 3. 如果 project_spec 已给出参数，所有章节必须沿用，禁止改写
 4. 如果 project_spec 未给出参数，必须在第1章首次出现时确定，并在后续所有章节、图纸、表格中保持一致
 5. 每个 <drawing/> 标签的 description 必须包含至少2项 project_spec 中的关键参数
 6. 同一参数在不同章节的名称、数值必须完全一致
 7. 第5章（施工/造价/管理方案）的数据必须引用前文已确定的参数，不得重新发明
+8. 【几何自洽】平面尺寸必须等于柱网×跨数(如7.2m×7跨=50.4m)；总建筑面积必须等于标准层面积×层数；
+   建筑总高度必须等于各层层高之和(若含室内外高差必须明示计算口径)
 """
 
 CHART_RULE = """【图表输出规范 - 必须遵守】
