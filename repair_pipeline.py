@@ -393,7 +393,10 @@ def reverify(rel, log):
     """修后复审: ①确定性重跑, 与修前比不允许新增问题 ②原矛盾数字对消解。
     返回 (ok, detail)。"""
     dst = os.path.join(OUT_ROOT, rel)
-    ptype = {"土木": "土木", "机械": "机械", "经管": "管理", "设计": "设计"}[rel.split("/")[1]]
+    _cat = rel.split("/")[1]
+    ptype = {"土木": "土木", "机械": "机械", "经管": "管理", "设计": "设计", "法学": "法学", "管理": "管理"}.get(_cat)
+    if not ptype:
+        return False, f"未知专业目录:{_cat}，复审无法执行"
     r2 = AD.audit_one(dst, ptype)
     old_probs = set(p.split(":")[0][:10] for p in log.get("prev_problems", []))
     new_hard = [p for p in r2["problems"] if p.startswith("❌")]
