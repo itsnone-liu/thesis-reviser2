@@ -235,16 +235,35 @@ def audit_pair(txt_path: str, docx_path: str, paper_type: str = "管理") -> dic
                 row["receipt"] = (f"chart {c_['ok']}/{c_['total']}"
                                   f" table {t_['ok']}/{t_['total']}"
                                   f" drawing {d_['ok']}/{d_['total']}")
+                # 人工批准通道: receipt.manual_approvals.{field}.approved_by 存在时,
+                # 对应降级从❌降为⚠️(仍必须在报告中可见), 无批准则维持阻断
+                appr = rc.get("manual_approvals") or {}
+
+                def _approved(field):
+                    a = appr.get(field)
+                    return isinstance(a, dict) and bool(a.get("approved_by"))
+
                 if c_["failed"] or t_["failed"]:
                     # 【护栏】降级=内容在DOCX中残缺, 不允许带病交付 → 阻断
-                    row["verdict"] = "❌"
-                    warns.append(f"回执降级/失败chart{len(c_['failed'])}·table{len(t_['failed'])}(阻断:内容残缺)")
-                if d_["missing_image"] or d_.get("placeholder"):
-                    row["verdict"] = "❌"
-                    warns.append(f"占位图{len(d_.get('missing_image', [])) + d_.get('placeholder', 0)}张")
+                    if _approved("fallback"):
+                        warns.append(f"回执降级chart{len(c_['failed'])}·table{len(t_['failed'])}"
+                                     f"(已人工批准:{appr['fallback'].get('approved_by')})")
+                    else:
+                        row["verdict"] = "❌"
+                        warns.append(f"回执降级/失败chart{len(c_['failed'])}·table{len(t_['failed'])}(阻断:内容残缺)")
+                if d_["missing_image"] or d_.get("placeholder") or c_.get("placeholder"):
+                    _n_ph = len(d_.get("missing_image", [])) + d_.get("placeholder", 0) + c_.get("placeholder", 0)
+                    if _approved("placeholder"):
+                        warns.append(f"占位图{_n_ph}张(已人工批准:{appr['placeholder'].get('approved_by')})")
+                    else:
+                        row["verdict"] = "❌"
+                        warns.append(f"占位图{_n_ph}张")
                 if rc.get("verdict") not in ("pass", "✅"):
-                    row["verdict"] = "❌"
-                    warns.append(f"回执验收结论:{rc.get('verdict', '缺失')}")
+                    if rc.get("verdict") == "manual_review" and appr:
+                        warns.append("回执=manual_review(含人工批准字段)")
+                    else:
+                        row["verdict"] = "❌"
+                        warns.append(f"回执验收结论:{rc.get('verdict', '缺失')}")
                 cons = rc.get("consistency")
                 if cons and cons.get("conflicts"):
                     row["consistency"] = "; ".join(
