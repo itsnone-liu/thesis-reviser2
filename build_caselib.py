@@ -207,7 +207,7 @@ def main():
         return
     dry = "--dry" in sys.argv
     cat = load_catalogs()
-    files = sorted(glob.glob(f"{SRC_DIR}/ws_*.json") + glob.glob(f"{SRC_DIR}/spc_*.json"),
+    files = sorted(glob.glob(f"{SRC_DIR}/ws_*.json") + glob.glob(f"{SRC_DIR}/spc_*.json") + glob.glob(f"{SRC_DIR}/gb_*.json"),
                    key=lambda p: (json.load(open(p, encoding="utf-8"))["no"], p))
     stats = {"ok": 0, "skip_abolished": 0, "name_mismatch": 0,
              "empty_core": 0, "no_catalog": 0}
@@ -218,6 +218,7 @@ def main():
             stats["skip_abolished"] += 1
             continue
         case = (parse_case(no, d["wikitext"]) if "wikitext" in d
+                else parse_spc_case(d) if str(d.get("page_id", "")).startswith("http")
                 else parse_spc_case(d))
         # 核心字段齐备性
         if not case["名称"] or not case["基本事实"] or not case["裁判要点"]:
