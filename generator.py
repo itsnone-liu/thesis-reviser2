@@ -1551,8 +1551,8 @@ def _generate_manage(profile: dict, update) -> str:
     txt = _prepend_paper_title(txt, profile)
     try:
         txt = validate_tag_format(txt, "管理")
-    except Exception:
-        pass
+    except Exception as exc:
+        raise RuntimeError(f"管理标签格式校验失败: {exc}") from exc
     txt = normalize_manage_markup(txt)
     update("生成完成！", 100)
     return txt
@@ -1652,8 +1652,8 @@ def _generate_design(profile: dict, update) -> str:
     # LLM格式校验（Layer 3）
     try:
         txt = validate_tag_format(txt, "设计")
-    except Exception:
-        pass
+    except Exception as exc:
+        raise RuntimeError(f"设计标签格式校验失败: {exc}") from exc
     txt = _prepend_paper_title(txt, profile)
     update("生成完成！", 100)
     return txt
@@ -1822,8 +1822,8 @@ def _generate_mechanical(profile: dict, update) -> str:
     txt = normalize_mechanical_drawing_tags(txt)
     try:
         txt = validate_tag_format(txt, "机械")
-    except Exception:
-        pass
+    except Exception as exc:
+        raise RuntimeError(f"机械标签格式校验失败: {exc}") from exc
     txt = normalize_mechanical_drawing_tags(txt)
     update("生成完成！", 100)
     return txt
@@ -1918,8 +1918,8 @@ def _generate_civil(profile: dict, update) -> str:
     txt = _prepend_paper_title(txt, profile)
     try:
         txt = validate_tag_format(txt, "土木")
-    except Exception:
-        pass
+    except Exception as exc:
+        raise RuntimeError(f"土木标签格式校验失败: {exc}") from exc
     txt = normalize_civil_markup(txt)
     update("生成完成！", 100)
     return txt
