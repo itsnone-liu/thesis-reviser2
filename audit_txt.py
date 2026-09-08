@@ -117,18 +117,18 @@ def audit_txt(text: str) -> dict:
         if not (RE_ANCHOR.search(probe) or re.search(r"^\d{1,2}-\d{1,3}\s+\S", probe, re.M)):
             ctx = text[max(0, m.start() - 20):m.start() + 26].replace("\n", " ")
             hard.append(f"T9空承诺指代: …{ctx}… (所在节及邻段无任何图/表锚点)")
-            break  # 每篇报首个即可
+            # 不提前 break：同篇可能有多个无编号空承诺，全部报告便于一次修完
 
     # T8 引用悬空（图注意图集合=显式图注+标签title）
     intent_figs = set(RE_REF.findall(text))
-    cap_figs = set(RE_FCAP.findall(text)) | set(RE_REF.findall(" ".join(
-        re.findall(r'<(?:drawing|chart)[^>]*?title="[^"]*?图\s?(\d{1,2}[-–]\d{1,3})', text))))
+    cap_figs = set(re.sub(r"^图\s*", "", m.group(0)).split()[0] for m in RE_FCAP.finditer(text)) | set(
+        re.findall(r'<(?:drawing|chart)[^>]*?title="[^"]*?图\s?(\d{1,2}[-–]\d{1,3})', text))
     dangling_f = sorted(intent_figs - cap_figs)
     if dangling_f:
         warn.append(f"T8图引用悬空: {','.join(dangling_f[:5])}")
     intent_ts = set(RE_TREF.findall(text))
-    cap_ts = set(RE_TCAP.findall(text)) | set(RE_TREF.findall(" ".join(
-        re.findall(r'<table[^>]*?(?:title|caption)="[^"]*?表\s?(\d{1,2}[-–]\d{1,3})', text))))
+    cap_ts = set(re.sub(r"^表\s*", "", m.group(0)).split()[0] for m in RE_TCAP.finditer(text)) | set(
+        re.findall(r'<table[^>]*?(?:title|caption)="[^"]*?表\s?(\d{1,2}[-–]\d{1,3})', text))
     dangling_t = sorted(intent_ts - cap_ts)
     if dangling_t:
         warn.append(f"T8表引用悬空: {','.join(dangling_t[:5])}")

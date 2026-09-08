@@ -312,6 +312,13 @@ def audit_one(path, ptype):
     except Exception as e:
         return {"file": path, "verdict": "❌", "problems": [f"无法解析:{e}"], "notes": {}}
     zones = split_zones(paras)
+    # 深审必须显式包含基础终审，不能仅凭注释声称“继承”。
+    try:
+        base = AF.audit_docx_only(path, ptype)
+        problems += list(base.get("problems", []))
+        notes["audit_final"] = {"verdict": base.get("verdict"), "stats": base.get("stats", {})}
+    except Exception as e:
+        problems.append(f"❌基础终审异常:{type(e).__name__}:{str(e)[:80]}")
     steps = [
         ("D1目录", lambda: audit_toc(zones)),
         ("D2标题", lambda: audit_heads(zones)),
@@ -333,7 +340,7 @@ def audit_one(path, ptype):
     return {"file": path, "verdict": verdict, "problems": problems, "notes": notes}
 
 
-TYPE_BY_DIR = {"土木": "土木", "机械": "机械", "经管": "管理"}
+TYPE_BY_DIR = {"土木": "土木", "机械": "机械", "经管": "管理", "设计": "设计", "法学": "法学", "管理": "管理"}
 
 
 def main():
@@ -345,8 +352,13 @@ def main():
     files = json.load(open(args.list))
     results = []
     for i, rel in enumerate(files):
-        ptype = TYPE_BY_DIR.get(rel.split("/")[1], "管理")
-        r = audit_one(os.path.join(args.root, rel), ptype)
+        parts = rel.replace("\\", "/").split("/")
+        category = parts[1] if len(parts) > 1 else ""
+        if category not in TYPE_BY_DIR:
+            r = {"file": rel, "verdict": "❌", "problems": [f"未知专业目录:{category}"], "notes": {}}
+        else:
+            ptype = TYPE_BY_DIR[category]
+            r = audit_one(os.path.join(args.root, rel), ptype)
         r["file"] = rel
         results.append(r)
         if (i + 1) % 20 == 0:
