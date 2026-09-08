@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 """LLM 语义审计层 (2026-09-07) — 无源论文语义质量复审。
 
+【证据范围】每条记录 evidence_scope=片段: 只看题目+摘要+各章开头+结论开头+前6条文献,
+不是全文通读; 本层任何"pass"都只表示"片段未见问题", 不得当作全文终审结论。
+
 每篇一次打包调用, 输入: 封面题目 + 中文摘要 + 章节标题 + 各章首段 + 结论首段 +
 参考文献前6条; 判定:
   1) 题目-内容匹配   论文实际做的是否是题目说的事
@@ -177,6 +180,20 @@ def parse_json(txt):
             return None
 
 
+def _save(results, path):
+    """逐篇原子落盘: 崩溃最多丢当前一篇, 不再每10篇批量写。"""
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(results, f, ensure_ascii=False, indent=0)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+# 只有终态可视为"已完成"; retry/error 重跑时必须重试, 不得当done跳过
+_TERMINAL = ("pass", "warn", "fail")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--list", required=True)
@@ -194,7 +211,8 @@ def main():
             results = json.load(open(args.out, encoding="utf-8"))
         except Exception:
             results = {}
-    done = set(results)
+    done = {k for k, v in results.items()
+            if isinstance(v, dict) and v.get("verdict") in _TERMINAL}
     for i, rel in enumerate(files):
         if rel in done:
             continue
@@ -202,7 +220,9 @@ def main():
         try:
             mat = extract_material(path)
         except Exception as e:
-            results[rel] = {"verdict": "error", "summary": f"素材提取失败:{type(e).__name__}"}
+            results[rel] = {"verdict": "error", "evidence_scope": "片段",
+                            "summary": f"素材提取失败:{type(e).__name__}"}
+            _save(results, args.out)
             continue
         prompt = build_prompt(mat)
         # 路由: 默认百炼; 限额/失败3次 → proxy; proxy也连败3次 → sleep退避
@@ -218,23 +238,34 @@ def main():
                 print(f"[{i}] 双通道连续失败暂停10s: {txt[:80]}", flush=True)
                 time.sleep(10)
                 STATE["proxy_fail"] = 0
-            results[rel] = {"verdict": "retry", "summary": txt[:120]}
+            results[rel] = {"verdict": "retry", "evidence_scope": "片段",
+                            "summary": txt[:120]}
+            _save(results, args.out)
             continue
         if ok:
             STATE["proxy_fail"] = 0
         parsed = parse_json(txt)
         if not parsed:
-            results[rel] = {"verdict": "retry", "summary": "JSON解析失败", "raw": txt[:200]}
+            results[rel] = {"verdict": "retry", "evidence_scope": "片段",
+                            "summary": "JSON解析失败", "raw": txt[:200]}
+            _save(results, args.out)
             continue
+        # evidence_scope显式标注: 本层只看片段, 任何结论不得冒充全文终审
+        parsed["evidence_scope"] = "片段"
+        parsed["fragments"] = {
+            "chapters_seen": len(mat["chapters"]),
+            "abstract_chars": len(mat["abstract"]),
+            "refs_seen": len(mat["refs"]),
+        }
         results[rel] = parsed
+        _save(results, args.out)
         if (i + 1) % 10 == 0:
-            json.dump(results, open(args.out, "w", encoding="utf-8"), ensure_ascii=False, indent=0)
-            n_ok = sum(1 for v in results.values() if v.get("verdict") in ("pass", "warn", "fail"))
+            n_ok = sum(1 for v in results.values() if v.get("verdict") in _TERMINAL)
             print(f"[{i+1}/{len(files)}] 已完成{n_ok}", flush=True)
-    json.dump(results, open(args.out, "w", encoding="utf-8"), ensure_ascii=False, indent=0)
+    _save(results, args.out)
     from collections import Counter
     cnt = Counter(v.get("verdict", "?") for v in results.values())
-    print("LLM语义审计:", dict(cnt), "->", args.out)
+    print("LLM语义审计(片段级证据):", dict(cnt), "->", args.out)
 
 
 if __name__ == "__main__":
