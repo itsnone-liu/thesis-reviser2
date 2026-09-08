@@ -191,16 +191,21 @@ def reclassify():
             continue
         # 官网详情页自身是一手核验源：旧条目若已带官方链接且核心字段完整，
         # 只提升 verified/说明，不重写人工内容。
+        changed = False
         if (case.get("来源") == "最高人民法院官网" and case.get("来源链接", "").startswith("https://www.court.gov.cn/")
                 and case.get("基本事实") and case.get("裁判要点")):
-            case["verified"] = True
-            case["verified_note"] = "最高人民法院官网详情页原文，案号与核心栏目齐备"
+            if not case.get("verified") or case.get("verified_note") != "最高人民法院官网详情页原文，案号与核心栏目齐备":
+                case["verified"] = True
+                case["verified_note"] = "最高人民法院官网详情页原文，案号与核心栏目齐备"
+                changed = True
         agg = CT.classify(case.get("案由", ""), case.get("名称", ""),
                           " ".join(case.get("关键词", []) or []))
         if agg and case.get("领域") != agg:
             case["领域"] = agg
             tags = [t for t in (case.get("tags") or []) if t not in CT.AGG]
             case["tags"] = tags + [agg]
+            changed = True
+        if changed:
             json.dump(case, open(path, "w", encoding="utf-8"),
                       ensure_ascii=False, indent=1)
             n += 1
