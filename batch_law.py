@@ -21,22 +21,32 @@ from renderer import render
 from law_pilot import polish_title, polish_title_t2, law_audit
 from audit_final import audit_docx_only
 
-def run_task(t, out_dir, work_dir):
+def run_task(t, out_dir, work_dir, used_cases=None, task_idx=0):
     student = t.get("student", "某生")
     sid = str(t.get("sid", ""))
     advisor = t.get("advisor", "某某")
     if t.get("t2"):
         domain = t.get("domain", "新就业形态")
-        cluster = caselib.cluster(domain)
+        # 0908: 同批去重 + 稳定轮换, 同领域多篇不再拿同一案例群
+        cluster = caselib.cluster(domain, exclude=used_cases, rotate=task_idx)
         if not cluster:
-            return None, f"T2缺≥3个verified的'{domain}'案例", []
+            return None, f"T2缺≥3个verified的'{domain}'案例(排除已用后)", []
         cases = cluster
         title = polish_title_t2(cluster, domain)
         profile = {"title": title, "law_type": "T2", "cluster": cluster, "domain": domain}
+        if used_cases is not None:
+            used_cases.update(str(c.get("案号", "")) for c in cases)
+            used_cases.update(c.get("名称", "") for c in cases)
     else:
         case = caselib.get(t.get("case", ""))
         if not case:
             return None, f"案例库未找到: {t.get('case')}", []
+        # 0908: T1同批防重(清单写重直接报错, 不静默生成两篇同案论文)
+        if used_cases is not None:
+            if str(case.get("案号", "")) in used_cases or case.get("名称", "") in used_cases:
+                return None, f"T1案例本批已用过: {case.get('案号') or case.get('名称', '')}", []
+            used_cases.add(str(case.get("案号", "")))
+            used_cases.add(case.get("名称", ""))
         cases = [case]
         title = polish_title(case)
         profile = {"title": title, "law_type": "T1", "case": case}
@@ -74,6 +84,7 @@ def main():
         return
 
     rows = []
+    used_cases = set()   # 0908: 全批案例去重账本(案号+名称)
     for i, t in enumerate(tasks):
         year = str(t.get("year", "26"))
         out_dir = os.path.join("论文终版", year, "法学")
@@ -81,7 +92,8 @@ def main():
         print(f"── [{i+1}/{len(tasks)}] {t.get('student', '某生')} "
               f"{'T2:' + t.get('domain','') if t.get('t2') else 'T1:' + t.get('case','')}", flush=True)
         try:
-            docx_path, info, probs = run_task(t, out_dir, "/tmp")
+            docx_path, info, probs = run_task(t, out_dir, "/tmp",
+                                              used_cases=used_cases, task_idx=i)
             if docx_path is None:
                 print(f"   ⚠️ 失败: {info}")
                 rows.append({"student": t.get("student"), "sid": t.get("sid"), "file": "",

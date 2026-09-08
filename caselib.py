@@ -33,11 +33,29 @@ def get(name_or_no: str) -> Optional[dict]:
             return c
     return None
 
-def cluster(domain: str, n: int = 4) -> list:
-    """同领域已核案例群(类型二用), 不足3案返回空"""
+def cluster(domain: str, n: int = 4, exclude=None, rotate=None) -> list:
+    """同领域已核案例群(类型二用), 不足3案返回空。
+
+    0908修复(百篇量产前提):
+    - exclude: 本批已用案号/名称集合, 排除后再取样 → 同批不撞
+    - rotate: 轮换序号(如任务索引)。不传时保持旧行为(取前N, 兼容单篇调试);
+      传入时按 案号+rotate 稳定哈希洗牌后取N → 同领域多篇各拿不同案例群,
+      且同一任务重跑结果不变(确定性, 断点续跑安全)
+    """
     hits = [c for c in load_library()
             if c.get("verified") and (domain in c.get("领域", "") or domain in str(c.get("tags", [])))]
-    return hits[:max(n, 3)] if len(hits) >= 3 else []
+    if exclude:
+        hits = [c for c in hits if str(c.get("案号", "")) not in exclude
+                and c.get("名称", "") not in exclude]
+    if len(hits) < 3:
+        return []
+    if rotate is None:
+        return hits[:max(n, 3)]
+    import hashlib
+    def _key(c):
+        h = hashlib.md5((str(c.get("案号", "")) + "#" + str(rotate)).encode("utf-8")).hexdigest()
+        return (h, str(c.get("案号", "")))
+    return sorted(hits, key=_key)[:max(n, 3)]
 
 def validate_case(case: dict) -> list:
     """入库体检: 必填字段/案号格式/verified标记"""
