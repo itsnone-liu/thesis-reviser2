@@ -431,21 +431,7 @@ def generate_paper(name, sid, title, batch, output_dir, teacher=""):
 
 def render_to_docx(profile, full_text, tables, output_dir, name, sid):
     """渲染DOCX — 完全复用原代码的txt_to_docx_safe管道"""
-    # 0908修复: 自报对账 — [FIGURES]清单 vs 实际drawing/table标签
-    # (何晋案: 图2-1正立面图在自报清单里但正文无标签 → 缺图)
-    _fig_blocks = re.findall(r"\[FIGURES\]\s*(.*?)\[/FIGURES\]", full_text, re.S)
-    _declared = set()
-    for _blk in _fig_blocks:
-        for _ln in _blk.split("\n"):
-            _m = re.match(r"^\s*([图表]\s*\d{1,2}(?:-\d{1,2})?)\s+\S", _ln)
-            if _m:
-                _declared.add(re.sub(r"\s+", "", _m.group(1)))
-    _actual = set()
-    for _m in re.finditer(r'<(?:drawing|table)\b[^>]*?title="([图表]\s*\d{1,2}(?:-\d{1,2})?)', full_text):
-        _actual.add(re.sub(r"\s+", "", _m.group(1)))
-    _missing = sorted(_declared - _actual)
-    if _missing:
-        print(f"  ⚠ [自报对账] 自报但无标签: {_missing} — 该图将缺失(需补drawing标签)")
+    # 0908: 自报对账已内置进core.txt_to_docx_safe(全专业生效), 此处不再重复
 
     # 1. 保存TXT
     txt_path = os.path.join(output_dir, f"{name}_{sid}.txt")

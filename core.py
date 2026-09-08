@@ -2992,6 +2992,22 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
     full_text = strip_mech_json_blocks(full_text)
     # 0908修复: 剥离[FIGURES]自报清单块(审计对账用, 不入正文——此前被当普通文本
     # 渲染导致图注×2, 何晋案: 10种图/表注重复)
+    # 0908一般性加固: 剥离前先对账(自报清单 vs 实际标签), 缺标签图进receipt报警(全专业)
+    figures_missing_tags = []
+    _fig_blocks = re.findall(r'\[FIGURES\]\s*(.*?)\[/FIGURES\]', full_text, re.S)
+    if _fig_blocks:
+        _declared = set()
+        for _blk in _fig_blocks:
+            for _ln in _blk.split("\n"):
+                _m = re.match(r"^\s*([图表]\s*\d{1,2}(?:-\d{1,2})?)\s+\S", _ln)
+                if _m:
+                    _declared.add(re.sub(r"\s+", "", _m.group(1)))
+        _actual = set()
+        for _m in re.finditer(r'<(?:drawing|table|chart)\b[^>]*?title="([图表]\s*\d{1,2}(?:-\d{1,2})?)', full_text):
+            _actual.add(re.sub(r"\s+", "", _m.group(1)))
+        figures_missing_tags = sorted(_declared - _actual)
+        if figures_missing_tags:
+            print(f"⚠ [自报对账] 自报但无标签: {figures_missing_tags} — 该图/表将缺失")
     full_text = re.sub(r'\[FIGURES\]\s*.*?\[/FIGURES\]\s*', '', full_text, flags=re.S)
     txt_title = extract_title_from_txt(full_text)
     if txt_title:
@@ -3071,6 +3087,7 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
         "charts": {"total": 0, "ok": 0, "placeholder": 0, "failed": []},
         "tables": {"total": 0, "ok": 0, "fallback": 0, "failed": []},
         "drawings": {"total": 0, "ok": 0, "placeholder": 0, "missing_image": []},
+        "figures_missing_tags": figures_missing_tags,  # 0908: 自报清单有但无标签的图/表
         "guard": None,
         "consistency": None,
     }

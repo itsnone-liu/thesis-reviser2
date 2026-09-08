@@ -52,11 +52,55 @@ def build_fact_card(accumulated: str, paper_type: str) -> str:
             rows = [f"- {k}: {v}" for k, v in spec.items()
                     if isinstance(v, (str, int, float)) and v and k in (
                         "part_material", "clamp_force", "fixture_material")]
+            # 0908加固: 机械正文叙事参数也进卡(machine_spec锁设计参数,正文数字仍可漂移)
+            rows += _generic_param_rows(accumulated, skip={"夹紧力", "主轴转速", "电机功率"})
+            if rows:
+                return _CARD_HEADER + "\n".join(rows) + "\n"
+        else:
+            # 0908一般性加固: 通用参数卡(管理/设计/法学等) — 复用tagguard跨专业参数字典,
+            # 从已生成正文回抽参数, 多值取首现值并标注漂移(与civil同构的"查表替代回忆")
+            rows = _generic_param_rows(accumulated)
             if rows:
                 return _CARD_HEADER + "\n".join(rows) + "\n"
     except Exception:
         pass
     return ""
+
+
+def _generic_param_rows(accumulated: str, skip: set = None, max_rows: int = 14) -> list:
+    """通用参数抽取(零LLM): 扫tagguard._PARAM_DICT各专业参数在accumulated中的取值,
+    单值→直接列; 多值→取首现值+标注曾出现的其他值(提示LLM以首值为准)。
+    skip: 已由专业抽取器覆盖的参数名(避免重复行)。"""
+    skip = skip or set()
+    try:
+        from tagguard import _PARAM_DICT, _parse_num
+    except Exception:
+        return []
+    seen = {}
+    for pname, pat in _PARAM_DICT:
+        if pname in skip:
+            continue
+        for m in re.finditer(pat, accumulated):
+            try:
+                raw = m.group(2) if pname.startswith("通用") else m.group(1)
+            except Exception:
+                continue
+            try:
+                v = _parse_num(raw)
+            except Exception:
+                v = None
+            if v is None:
+                v = raw
+            seen.setdefault(pname, []).append(f"{v:g}" if isinstance(v, float) else str(v))
+    rows = []
+    for pname, vals in seen.items():
+        uniq = list(dict.fromkeys(vals))
+        if len(uniq) == 1:
+            rows.append(f"- {pname}: {uniq[0]}")
+        elif len(uniq) <= 4:
+            rows.append(f"- {pname}: {uniq[0]} (注意:前文曾出现{','.join(uniq[1:])},以本值为准)")
+        # >4个不同值视为分对象参数(如多企业/多方案对比),不锁
+    return rows[:max_rows]
 
 
 def checkpoint_chapter(accumulated: str, paper_type: str) -> list:

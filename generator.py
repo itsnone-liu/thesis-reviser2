@@ -57,6 +57,19 @@ from prompts.law import (
     build_references as lw_build_refs,
 )
 
+# 0908一般性加固: 章末自报图表清单(civil同款机制推广到全专业)。
+# 渲染端core.txt_to_docx_safe自动剥离+对账(自报vs实际标签, 缺失报警进receipt),
+# 审计端audit_txt T10用它对账——"生成-消费"闭环, 不污染正文。
+FIGURES_DECL_RULE = """
+
+【本章末尾自报图表清单(必做)】
+本章所有<drawing>/<table>/<chart>标签输出完毕后, 章节最后一行输出清单, 格式(没有图表则清单内写"无"):
+[FIGURES]
+图N-1 标题
+表N-1 标题
+[/FIGURES]
+自报清单必须与本章实际输出的一一对应, 禁止自报不存在的图或漏报。"""
+
 
 _VALID_TABLE_TAG_RE = re.compile(
     r'^\s*<table\b'
@@ -1482,7 +1495,13 @@ def _generate_manage(profile: dict, update) -> str:
     for idx, (name, num) in enumerate(MG_CHAPTERS):
         pct = 5 + int((idx + 0.5) / total_chapters * 80)
         update(f"正在生成第{num}章 {name}...", pct)
-        prompt = mg_chapter_prompt(name, num, profile)
+        # 0908一般性加固: 事实卡注入(已确立参数回抽,防跨章漂移)
+        try:
+            from factcard import build_fact_card
+            _card = build_fact_card(f"摘要\n{abstract}\n" + "\n".join(chapters_content.values()), "管理")
+        except Exception:
+            _card = ""
+        prompt = mg_chapter_prompt(name, num, profile) + _card + FIGURES_DECL_RULE
         content = _call_llm_checked(prompt, max_tokens=MG_WORD_LIMITS.get(name, 1000) * 2,
                                     label=f"管理·第{num}章{name}")
         content = clean_text(content)
@@ -1554,7 +1573,13 @@ def _generate_design(profile: dict, update) -> str:
     for idx, (name, num) in enumerate(zip(chapter_names, range(1, total_ch + 1))):
         pct = 10 + int((idx + 0.5) / total_ch * 75)
         update(f"正在生成第{num}章 {name}...", pct)
-        prompt = dj_chapter_prompt(name, num, profile, outline)
+        # 0908一般性加固: 事实卡注入
+        try:
+            from factcard import build_fact_card
+            _card = build_fact_card(f"摘要\n{abstract}\n" + "\n".join(b for _, b in chapters_content), "设计")
+        except Exception:
+            _card = ""
+        prompt = dj_chapter_prompt(name, num, profile, outline) + _card + FIGURES_DECL_RULE
         content = _call_llm_checked(prompt, max_tokens=SJ_WORD_LIMITS.get(name, 1000) * 2,
                                     label=f"设计·第{num}章{name}")
         content = clean_text(content)
@@ -1721,7 +1746,13 @@ def _generate_mechanical(profile: dict, update) -> str:
     for idx, (name, num) in enumerate(zip(chapter_names, range(1, total_ch + 1))):
         pct = 12 + int((idx + 0.5) / total_ch * 72)
         update(f"正在生成第{num}章 {name}...", pct)
-        prompt = mc_chapter_prompt(name, num, profile, outline, machine_spec)
+        # 0908一般性加固: 机械事实卡(正文叙事参数回抽; machine_spec只锁设计参数)
+        try:
+            from factcard import build_fact_card
+            _card = build_fact_card(f"摘要\n{abstract}\n" + "\n".join(b for _, b, _ in chapters_content), "机械")
+        except Exception:
+            _card = ""
+        prompt = mc_chapter_prompt(name, num, profile, outline, machine_spec) + _card + FIGURES_DECL_RULE
         content = _call_llm_checked(prompt, max_tokens=MC_WORD_LIMITS.get(name, 1000) * 3,
                                     label=f"机械·第{num}章{name}")
         content = clean_text(content)
@@ -2008,10 +2039,16 @@ def _generate_law(profile: dict, update) -> str:
     for idx, (name, num, limit) in enumerate(chapters_tbl):
         pct = 10 + int((idx + 0.5) / total_ch * 75)
         update(f"正在生成第{num}章 {name}...", pct)
+        # 0908一般性加固: 法学事实卡(案情数字/年份回抽,防跨章漂移; 素材仍以案例库为准)
+        try:
+            from factcard import build_fact_card
+            _card = build_fact_card(f"摘要\n{abstract}\n" + "\n".join(b for _, _, b in chapters_content), "法学")
+        except Exception:
+            _card = ""
         if law_type == "T2":
-            prompt = lw_chapter_prompt_t2(title, cluster, name, num, limit, prev)
+            prompt = lw_chapter_prompt_t2(title, cluster, name, num, limit, prev) + _card + FIGURES_DECL_RULE
         else:
-            prompt = lw_chapter_prompt(title, case, name, num, limit, prev)
+            prompt = lw_chapter_prompt(title, case, name, num, limit, prev) + _card + FIGURES_DECL_RULE
         content = _call_llm_checked(prompt, max_tokens=max(4096, int(limit * 2.2)),
                                     label=f"法学·第{num}章{name}")
         content = clean_text(content)
