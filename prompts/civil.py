@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from core import CIV_WORD_LIMITS, CIV_CHAPTERS
 
 FMT_RULE = """【格式铁律 - 必须严格遵守】
-1. 严禁使用任何markdown符号：# ** * ` > | --- |
+1. 严禁使用正文markdown符号：# ** * ` > ---；但结构化标签属性内允许使用协议分隔符 |、|| 和 ;，不得将标签拆成多行
 2. 严禁使用加粗标记，所有文字统一纯文本
 3. 段落之间用换行分隔，不要用空行
 4. 正文中涉及的结构维度、对比项、分类或参数项，要保持完整，不得为了简化删减

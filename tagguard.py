@@ -188,15 +188,12 @@ def _validate_chart(attrs: dict, seq: int):
     if chart_type == "gantt":
         for i, g in enumerate(series):
             if len(g) != 2:
-                issues.append(f"第{i+1}组非start,duration两项，已截齐")
-                series[i] = (g + [g[-1]] * 2)[:2]
+                return None, [f"第{i+1}组非start,duration两项，拒绝静默截齐"], "dropped"
         if not x_labels:
             x_labels = [f"任务{i+1}" for i in range(len(series))]
             issues.append("x缺失，按组数补任务名")
-        n_eff = min(len(x_labels), len(series))
         if len(x_labels) != len(series):
-            issues.append(f"任务数({len(x_labels)})与数据组数({len(series)})不一致，截齐为{n_eff}")
-            x_labels, series = x_labels[:n_eff], series[:n_eff]
+            return None, [f"任务数({len(x_labels)})与数据组数({len(series)})不一致，拒绝截齐"], "dropped"
         new_attrs = {
             "id": attrs.get("id", str(seq)),
             "title": attrs.get("title", "") or f"图{seq}",
@@ -230,10 +227,7 @@ def _validate_chart(attrs: dict, seq: int):
     if n_eff == 0:
         return None, ["x与y数量无法对齐，剔除"], "dropped"
     if len(x_labels) != n_eff or any(len(s) != n_eff for s in series):
-        issues.append(f"x/系列长度不一致，统一截齐为{n_eff}点")
-        actions.append("truncated")
-        x_labels = x_labels[:n_eff]
-        series = [s[:n_eff] for s in series]
+        return None, ["x/系列长度不一致，拒绝静默截齐"], "dropped"
     # legend 对齐
     legend = _split_values(attrs.get("legend", ""))
     if len(series) == 1 and len(legend) > 1:

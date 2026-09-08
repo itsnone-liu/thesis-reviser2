@@ -1600,8 +1600,8 @@ def _generate_design(profile: dict, update) -> str:
     # 5. 图纸补齐
     update("正在分析图纸标签...", 88)
     full_text_before = ""
-    for name, content in chapters_content:
-        full_text_before += f"第{chapters_content.index((name, content))+1}章 {name}\n{content}\n\n"
+    for idx, (name, content) in enumerate(chapters_content, 1):
+        full_text_before += f"第{idx}章 {name}\n{content}\n\n"
     repaired_text = repair_drawing_tags(full_text_before, profile)
     # 如果补齐有变化，重新解析章节内容
     if repaired_text != full_text_before:

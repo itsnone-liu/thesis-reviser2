@@ -125,8 +125,19 @@ def call_llm(prompt: str, max_tokens: int = 4096, retry: int = 3) -> str:
                 headers=headers, json=data, timeout=180
             )
             if resp.status_code == 200:
-                content = (resp.json().get("choices") or [{}])[0].get("message", {}).get("content") or ""
+                payload = resp.json()
+                choice = (payload.get("choices") or [{}])[0] or {}
+                finish_reason = choice.get("finish_reason") or ""
+                content = (choice.get("message") or {}).get("content") or ""
                 content = content.strip()
+                # length 表示服务端达到 token 上限；即使末尾有标点也可能是完整句中断，必须重试。
+                if finish_reason == "length":
+                    print(f"LLM输出因length截断(尝试{attempt+1}/{retry})，提高max_tokens重试")
+                    cur_max_tokens = min(int(cur_max_tokens * 1.8) + 1000, 16000)
+                    if attempt < retry - 1:
+                        time.sleep(2)
+                        continue
+                    raise RuntimeError("LLM输出达到max_tokens仍被截断，阻断生成")
                 if content:
                     return content
                 # 正文为空：多为推理模型思考耗尽tokens → 升高max_tokens重试
@@ -3126,9 +3137,12 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
     seen_toc_refs = False  # 是否已经在TOC中看到"参考文献"（用于无PAGE_BREAK过渡检测）
 
     receipt = {
+        "schema_version": 2,
+        "render_status": "running",
         "charts": {"total": 0, "ok": 0, "placeholder": 0, "failed": []},
         "tables": {"total": 0, "ok": 0, "fallback": 0, "failed": [], "manual_review": []},
         "drawings": {"total": 0, "ok": 0, "placeholder": 0, "missing_image": []},
+        "postflight": {"docx_valid": False, "mismatches": []},
         "figures_missing_tags": figures_missing_tags,  # 0908: 自报清单有但无标签的图/表
         "guard": None,
         "consistency": None,
@@ -3412,7 +3426,11 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
     try:
         _postflight = Document(docx_path)
         _postflight.element.body
+        receipt["postflight"]["docx_valid"] = True
+        receipt["postflight"]["tables"] = len(_postflight.tables)
+        receipt["postflight"]["drawings"] = len(_postflight.element.body.findall('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}drawing'))
     except Exception as exc:
+        receipt["postflight"]["mismatches"].append(str(exc))
         raise RuntimeError(f"DOCX后置验收失败，禁止交付: {exc}") from exc
 
     # ===== 渲染回执：写JSON旁车文件 + 控制台摘要（失败可见，不再静默） =====
@@ -3434,6 +3452,12 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
             unfixed = sum(1 for c in cons["conflicts"] if not c.get("fixed"))
             if unfixed:
                 flags.append(f"数值冲突未修{unfixed}")
+        if c_["placeholder"] or d_["placeholder"] or t_.get("fallback") or flags:
+            receipt["render_status"] = "degraded"
+            receipt["verdict"] = "manual_review"
+        else:
+            receipt["render_status"] = "ok"
+            receipt["verdict"] = "pass"
         status = "⚠️ " + " / ".join(flags) if flags else "✅ 全部渲染成功"
         print(f"  [渲染回执] chart {c_['ok']}/{c_['total']} | table {t_['ok']}/{t_['total']}"
               f" | drawing {d_['ok']}/{d_['total']} → {status}")
