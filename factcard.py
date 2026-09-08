@@ -113,10 +113,10 @@ def checkpoint_chapter(accumulated: str, paper_type: str) -> list:
             return [f"{e.get('key')}: {','.join(map(str, e.get('values', [])))}"
                     for e in rep.get("errors", [])]
         if "机械" in (paper_type or "") or "mech" in (paper_type or "").lower():
-            from mechanical_consistency import resolve_article_spec, validate_mechanical_spec
-            rep = validate_mechanical_spec(resolve_article_spec(accumulated))
-            return [f"{e.get('key')}: {e.get('message', '')}"[:60]
-                    for e in rep.get("errors", [])]
+            from mechanical_consistency import validate_mechanical_text
+            rep = validate_mechanical_text(accumulated)
+            return [f"{e.get('key')}: {e.get('values', [])}"[:100]
+                    for e in rep.get("conflicts", [])]
         # 管理/设计/法学等没有专业工程抽取器时，仍执行通用同名参数冲突检查。
         # 只报告（不自动改写），避免把年度变化、方案对比误当成固定参数。
         from tagguard import check_numeric_consistency
