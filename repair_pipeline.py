@@ -393,7 +393,7 @@ def reverify(rel, log):
     """修后复审: ①确定性重跑, 与修前比不允许新增问题 ②原矛盾数字对消解。
     返回 (ok, detail)。"""
     dst = os.path.join(OUT_ROOT, rel)
-    ptype = {"土木": "土木", "机械": "机械", "经管": "管理"}[rel.split("/")[1]]
+    ptype = {"土木": "土木", "机械": "机械", "经管": "管理", "设计": "设计"}[rel.split("/")[1]]
     r2 = AD.audit_one(dst, ptype)
     old_probs = set(p.split(":")[0][:10] for p in log.get("prev_problems", []))
     new_hard = [p for p in r2["problems"] if p.startswith("❌")]
@@ -418,18 +418,31 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--only", default="")
+    ap.add_argument("--list", dest="listfile", default="", help="替代返修清单json路径")
+    ap.add_argument("--llm", dest="llmfile", default="", help="替代LLM审计json路径")
+    ap.add_argument("--deep", dest="deepfile", default="", help="替代深度审计json路径(csv)")
+    ap.add_argument("--state", dest="statefile", default="", help="替代state文件路径")
+    ap.add_argument("--rec", dest="recfile", default="", help="替代返修记录csv路径")
     ap.add_argument("--llm-review", action="store_true", help="语义修复篇修后LLM重审")
     args = ap.parse_args()
-    files = json.load(open(LIST_F))
+    files = json.load(open(args.listfile or LIST_F))
+    llm_f = args.llmfile or LLM_F
+    deep_f = args.deepfile or DEEP_F
+    state_f = args.statefile or STATE_F
+    rec_f = args.recfile or REC_F
     if args.only:
         files = [f for f in files if args.only in f]
     if args.limit:
         files = files[:args.limit]
-    deep = {r["file"]: r for r in json.load(open(DEEP_F, encoding="utf-8"))}
-    llm = json.load(open(LLM_F, encoding="utf-8"))
+    if deep_f.endswith(".csv"):
+        import csv as _csv
+        deep = {r["文件"]: {"problems": (r.get("问题") or "").split(";")} for r in _csv.DictReader(open(deep_f, encoding="utf-8-sig"))}
+    else:
+        deep = {r["file"]: r for r in json.load(open(deep_f, encoding="utf-8"))}
+    llm = json.load(open(llm_f, encoding="utf-8"))
     state = {}
-    if os.path.exists(STATE_F):
-        state = json.load(open(STATE_F, encoding="utf-8"))
+    if os.path.exists(state_f):
+        state = json.load(open(state_f, encoding="utf-8"))
     records = []
     for i, rel in enumerate(files):
         if state.get(rel, {}).get("done"):
@@ -471,11 +484,11 @@ def main():
         state[rel] = log
         records.append(log)
         if (i + 1) % 10 == 0:
-            json.dump(state, open(STATE_F, "w", encoding="utf-8"), ensure_ascii=False)
+            json.dump(state, open(state_f, "w", encoding="utf-8"), ensure_ascii=False)
             done_n = sum(1 for v in state.values() if v.get("done"))
             print(f"[{i+1}/{len(files)}] 复审通过 {done_n}", flush=True)
-    json.dump(state, open(STATE_F, "w", encoding="utf-8"), ensure_ascii=False)
-    with open(REC_F, "w", newline="", encoding="utf-8-sig") as f:
+    json.dump(state, open(state_f, "w", encoding="utf-8"), ensure_ascii=False)
+    with open(rec_f, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
         w.writerow(["文件", "复审", "修复动作", "问题", "验证详情"])
         for r in records:
@@ -483,7 +496,7 @@ def main():
                         " | ".join(r.get("actions", [])), "; ".join(r.get("errors", [])),
                         r.get("verify", "")])
     ok_n = sum(1 for r in records if r.get("done"))
-    print(f"返修完成: {ok_n}/{len(records)} 复审通过 → {REC_F}")
+    print(f"返修完成: {ok_n}/{len(records)} 复审通过 → {rec_f}")
 
 
 if __name__ == "__main__":
