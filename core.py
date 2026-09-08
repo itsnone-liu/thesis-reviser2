@@ -3079,7 +3079,9 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
                 print(f"  [{summary}]")
                 update("标签守卫: " + summary, 35)
         except Exception as e:
-            print(f"标签守卫异常(忽略): {e}")
+            raise RuntimeError(f"标签守卫失败，禁止继续渲染: {e}") from e
+    else:
+        raise RuntimeError("标签守卫不可用，禁止继续渲染")
     # 一致性守卫：跨章数值冲突检测与修正（标题事实优先/多数值投票）
     consistency_report = None
     if check_numeric_consistency is not None:
@@ -3092,6 +3094,8 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
                 update("一致性守卫: " + csum, 36)
         except Exception as e:
             raise RuntimeError(f"一致性守卫失败，禁止继续渲染: {e}") from e
+    else:
+        raise RuntimeError("一致性守卫不可用，禁止继续渲染")
 
     update("正在提取标签数据...", 30)
     # 使用宽容解析器（支持多种标签格式变体）
@@ -3144,19 +3148,23 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
         "drawings": {"total": 0, "ok": 0, "placeholder": 0, "missing_image": []},
         "postflight": {"docx_valid": False, "mismatches": []},
         "figures_missing_tags": figures_missing_tags,  # 0908: 自报清单有但无标签的图/表
-        "guard": None,
-        "consistency": None,
+        "guard": {"status": "ok" if isinstance(guard_report, dict) else "failed", "errors": []},
+        "consistency": {"status": "ok" if isinstance(consistency_report, dict) else "failed", "errors": []},
     }
     if isinstance(guard_report, dict):
         receipt["guard"] = {
+            "status": "ok",
             "scanned": dict(guard_report.get("scanned", {})),
             "fixed": dict(guard_report.get("fixed", {})),
+            "errors": list(guard_report.get("errors", [])),
         }
     if isinstance(consistency_report, dict):
         receipt["consistency"] = {
+            "status": "ok",
             "params_scanned": consistency_report.get("params_scanned", 0),
             "fixed_count": consistency_report.get("fixed_count", 0),
             "conflicts": consistency_report.get("conflicts", []),
+            "errors": list(consistency_report.get("errors", [])),
         }
 
     for pt, ct in parts:
