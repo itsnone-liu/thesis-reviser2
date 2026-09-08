@@ -1626,8 +1626,7 @@ def add_t(doc, ct: dict, tn: int):
     headers = table_shape["headers"]
     data_rows = table_shape["rows"]
     if not headers:
-        print(f"表{tn}数据不足，跳过")
-        return
+        raise ValueError(f"表{tn}缺少表头，禁止静默跳过")
     num_cols = max(len(headers), 1)
     table_data = data_rows
     p = doc.add_paragraph()
@@ -3081,9 +3080,7 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
                 print(f"  [{csum}]")
                 update("一致性守卫: " + csum, 36)
         except Exception as e:
-            print(f"一致性守卫异常(忽略): {e}")
-        except Exception as e:
-            print(f"标签守卫异常(跳过): {e}")
+            raise RuntimeError(f"一致性守卫失败，禁止继续渲染: {e}") from e
 
     update("正在提取标签数据...", 30)
     # 使用宽容解析器（支持多种标签格式变体）
@@ -3130,7 +3127,7 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
 
     receipt = {
         "charts": {"total": 0, "ok": 0, "placeholder": 0, "failed": []},
-        "tables": {"total": 0, "ok": 0, "fallback": 0, "failed": []},
+        "tables": {"total": 0, "ok": 0, "fallback": 0, "failed": [], "manual_review": []},
         "drawings": {"total": 0, "ok": 0, "placeholder": 0, "missing_image": []},
         "figures_missing_tags": figures_missing_tags,  # 0908: 自报清单有但无标签的图/表
         "guard": None,
@@ -3200,6 +3197,8 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
                         fallback_ct["data"] = ";".join(toks)
                     add_t(doc, fallback_ct, tn)
                     receipt["tables"]["fallback"] += 1
+                    receipt["tables"].setdefault("manual_review", []).append(
+                        {"title": ct.get("title", ""), "reason": "fallback_used"})
                 except Exception as e2:
                     print(f"表格兜底也失败: {e2}")
         elif pt == "drawing":
