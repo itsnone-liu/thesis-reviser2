@@ -178,8 +178,8 @@ def audit_docx_only(path, ptype):
         caps = []          # [(line_idx, C, N_or_None, full)]
         for i, p in enumerate(paras):
             s = p.strip()
-            if _REF_SENT.search(s[:20]) or len(s) > 60:
-                continue  # 引用句/超长段不是图注
+            if _REF_SENT.search(s[:20]) and not re.match(r'^图\s*\d', s):
+                continue  # 明显引用句排除；带图号的长图注仍必须识别
             found = []
             if capt_line.match(s):
                 for m in _tok.finditer(s[:44]):
@@ -188,16 +188,20 @@ def audit_docx_only(path, ptype):
                     found.append((int(m.group(2)), int(m.group(3)) if m.group(3) else None))
             if found:
                 caps.append((i, found, s[:30]))
-        # 双重编号残迹: "表1 表1-1 xxx" 同行两个匹配且第二个带章节号
+        # 同一注行出现多个同类编号即报告，不能只取最后一个掩盖重复/双重编号。
         dbl = [s for _, f, s in caps if len(f) > 1]
         if dbl:
             res["problems"].append(f"{kind}注双重编号{len(dbl)}处(如\"{dbl[0][:18]}\")")
-        # 有效编号: 行内取最后一个形式
+        # 保留每个编号并检测重复；每行第一个/最后一个都不能静默吞掉。
         nums = [f[-1] for _, f, _ in caps]
+        from collections import Counter
+        dup_nums = [n for n, count in Counter(nums).items() if count > 1]
+        if dup_nums:
+            res["problems"].append(f"{kind}注编号重复{len(dup_nums)}个({dup_nums[:5]})")
         simple = [c for c, n in nums if n is None]
         chapter = [(c, n) for c, n in nums if n is not None]
         # 引用集合(全文)
-        ref_re = re.compile(rf"[如见]?([图表])(\d{{1,2}})(?:[-–—](\d{{1,2}}))?")
+        ref_re = re.compile(rf"[如见]?([图表])\s*(\d{{1,2}})(?:\s*[-–—]\s*(\d{{1,2}}))?")
         refs = set()
         for p in body:
             for m in ref_re.finditer(p):
@@ -244,7 +248,11 @@ def audit_docx_only(path, ptype):
     m = re.search(r"参考文献\s*\n((?:\[?\d+\]?[^\n]+\n?)+)", text)
     if not m:
         m = re.search(r"参考文献\s*\n(.{200,})", text, re.S)
-    refs = re.findall(r"^\[(\d+)\]", m.group(1), re.M) if m else []
+    ref_line_re = re.compile(r'^\s*(?:\[\s*(\d+)\s*\]|［\s*(\d+)\s*］|(\d+)\.)', re.M)
+    refs = []
+    if m:
+        for rm in ref_line_re.finditer(m.group(1)):
+            refs.append(next((g for g in rm.groups() if g), ""))
     n_refs = len(set(refs))
     res["stats"]["refs"] = n_refs
     if n_refs < 10:
