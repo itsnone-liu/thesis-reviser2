@@ -130,10 +130,16 @@ def parse_case(no: int, wikitext: str) -> dict:
 
 
 def parse_spc_case(d: dict) -> dict:
-    """解析最高法官网详情页已清洗正文；官网本身是一手权威源。"""
+    """解析最高法官网详情页已清洗正文；官网本身是一手权威源。
+    执行专题批次(251-256等)的要点栏叫「执行实施要点/执行监督要点」，
+    统一映射到 裁判要点。"""
     no = int(d["no"])
     t = re.sub(r"[ \t\r]+", " ", d.get("text", ""))
     t = re.sub(r"\n{2,}", "\n", t)
+    # 执行批次变体标签归一化（251-256：执行实施/监督要点、执行结果、执行理由）
+    t = re.sub(r"执行(?:实施|监督)要点", "裁判要点", t)
+    t = re.sub(r"执行结果", "裁判结果", t)
+    t = re.sub(r"执行理由", "裁判理由", t)
     name = str(d.get("name", ""))
     # 抽取各栏目到下一个栏目；官网早期页的栏目顺序不固定，故统一找最近边界
     labels = ("关键词", "裁判要点", "相关法条", "基本案情", "裁判结果", "裁判理由")
@@ -180,6 +186,44 @@ def parse_spc_case(d: dict) -> dict:
     return case
 
 
+def parse_notice_case(d: dict) -> dict:
+    """解析批次发布页全文缓存(parse_batch_notice.py 产物)：栏目已切好，
+    来源为最高法官方子站(court.gov.cn 系)发布页，属一手权威源。"""
+    no = int(d["no"])
+    name = re.sub(r"\s+", "", str(d.get("name", ""))).lstrip("：: ")
+    kw = " ".join(re.split(r"[;；,，、\u3000/ ]+", d.get("关键词", ""))[:12])
+    keywords = [x.strip() for x in re.split(r"[;；,，、\u3000\u2002/ ]+", d.get("关键词", "")) if x.strip()]
+    case = {
+        "名称": name, "案号": f"指导案例{no}号",
+        "关键词": keywords[:12],
+        "基本事实": re.sub(r"\s+", " ", d.get("基本案情", "")).strip()[:4000],
+        "裁判结果": re.sub(r"\s+", " ", d.get("裁判结果", "")).strip()[:1000],
+        "裁判理由": re.sub(r"\s+", " ", d.get("裁判理由", "")).strip()[:4000],
+        "裁判要点": re.sub(r"\s+", " ", d.get("裁判要点", "")).strip()[:2500],
+        "相关法条": re.sub(r"\s+", " ", d.get("相关法条", "")).strip()[:600],
+        "批次": f"第{no}号(最高法指导性案例, {d.get('published', '')})",
+        "来源": "最高人民法院官网", "来源链接": d.get("url", ""),
+    }
+    m = re.match(r"(.{2,30}?)诉(.{2,50}?)(.*?(?:纠纷)?案|裁定|决定)$", name)
+    if m:
+        case["当事人"] = f"原告:{m.group(1).strip()}; 被告:{m.group(2).strip()}"
+        case["案由"] = (m.group(3) or "")[:30]
+    else:
+        case["当事人"] = name[:40]
+        case["案由"] = name[-18:]
+    req = re.search(r"[^。]{0,40}(?:请求|诉请|提起[^。]{0,10}之诉)[^。]{0,70}", case["基本事实"])
+    case["诉讼请求"] = req.group(0).strip() if req else f"就{case['案由']}请求法院依法裁判(由基本案情归纳)"
+    case["争议焦点"] = [x.strip() for x in re.split(r"[。；]", case["裁判理由"])
+                     if 8 < len(x.strip()) < 70][:4]
+    if not case["争议焦点"] and case["裁判要点"]:
+        case["争议焦点"] = [case["裁判要点"].split("。", 1)[0][:70]]
+    case["领域"] = classify(case["案由"], name, kw)
+    case["tags"] = keywords + ([case["领域"]] if case["领域"] else [])
+    case["verified"] = True
+    case["verified_note"] = "最高人民法院官网批次发布页全文，核心栏目解析齐备"
+    return case
+
+
 def reclassify():
     """只刷新在库条目的领域/tags(taxonomy演进后), 不动其他字段。"""
     import case_taxonomy as CT
@@ -189,10 +233,10 @@ def reclassify():
             case = json.load(open(path, encoding="utf-8"))
         except Exception:
             continue
-        # 官网详情页自身是一手核验源：旧条目若已带官方链接且核心字段完整，
-        # 只提升 verified/说明，不重写人工内容。
+        # 官网(court.gov.cn 系，含 ipc/gongbao 子站)自身是一手核验源：旧条目若
+        # 已带官方链接且核心字段完整，只提升 verified/说明，不重写人工内容。
         changed = False
-        if (case.get("来源") == "最高人民法院官网" and case.get("来源链接", "").startswith("https://www.court.gov.cn/")
+        if (case.get("来源") == "最高人民法院官网" and "court.gov.cn" in str(case.get("来源链接", ""))
                 and case.get("基本事实") and case.get("裁判要点")):
             if not case.get("verified") or case.get("verified_note") != "最高人民法院官网详情页原文，案号与核心栏目齐备":
                 case["verified"] = True
@@ -229,6 +273,7 @@ def main():
             stats["skip_abolished"] += 1
             continue
         case = (parse_case(no, d["wikitext"]) if "wikitext" in d
+                else parse_notice_case(d) if ("基本案情" in d and "url" in d)
                 else parse_spc_case(d) if str(d.get("page_id", "")).startswith("http")
                 else parse_spc_case(d))
         # 核心字段齐备性
@@ -251,12 +296,15 @@ def main():
             case["verified_note"] = "名称按双源目录修正(文库页标题解析歧义)"
         elif not ref:
             stats["no_catalog"] += 1
-            # 最高法官网详情页本身是一手权威源；其案号与正文核心栏齐备时可直接核验。
-            # gb/spc缓存统一通过 parse_spc_case 进入，page_id为数字即官网详情页。
-            is_spc = ("wikitext" not in d and str(d.get("page_id", "")).isdigit())
+            # 最高法官网(court.gov.cn 系，含 ipc/gongbao 子站)本身是一手权威源；
+            # 详情页(page_id 数字)与批次发布页(notice 解析)案号+核心栏目齐备即可核验。
+            is_spc = ("wikitext" not in d
+                      and (str(d.get("page_id", "")).isdigit()
+                           or ("url" in d and "court.gov.cn" in str(d.get("url", "")))))
             case["verified"] = bool(is_spc)
-            case["verified_note"] = ("最高人民法院官网详情页原文，案号与核心栏目齐备"
-                                      if is_spc else "目录双源均未收录该号, 仅维基文库单源")
+            case["verified_note"] = ("最高人民法院官网批次发布页全文，核心栏目解析齐备" if ("url" in d and "court.gov.cn" in str(d.get("url", ""))) else
+                                     "最高人民法院官网详情页原文，案号与核心栏目齐备"
+                                     if is_spc else "目录双源均未收录该号, 仅维基文库单源")
         else:
             case["verified"] = True
             case["verified_note"] = "维基文库官方全文+双源目录名称一致"
