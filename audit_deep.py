@@ -17,7 +17,7 @@
 用法: python3 audit_deep.py --list 论文修订档案/_无源清单_0908.json \
           --csv 论文修订档案/审计报告_0908深度.csv [--root 论文终版]
 """
-import os, re, sys, csv, json, zipfile, argparse
+import os, re, sys, csv, json, zipfile, argparse, glob
 from collections import Counter, defaultdict
 from docx import Document
 
@@ -312,6 +312,20 @@ def audit_one(path, ptype):
     except Exception as e:
         return {"file": path, "verdict": "❌", "problems": [f"无法解析:{e}"], "notes": {}}
     zones = split_zones(paras)
+    # 若同目录存在旁车TXT，终审必须回溯TXT层；无TXT时明确记录 unavailable，不能冒充全链路通过。
+    txt_candidates = [path[:-5] + ".txt", os.path.splitext(path)[0] + ".txt"]
+    txt_path = next((p for p in txt_candidates if os.path.isfile(p)), None)
+    if txt_path:
+        try:
+            from audit_txt import audit_file as _audit_txt_file
+            _, tx = _audit_txt_file(txt_path)
+            notes["audit_txt"] = {"path": txt_path, "status": "ok" if not tx["hard"] else "failed", "hard": tx["hard"], "warn": tx["warn"]}
+            problems += [f"TXT:{x}" for x in tx["hard"]]
+        except Exception as e:
+            problems.append(f"❌TXT审计异常:{type(e).__name__}:{str(e)[:80]}")
+    else:
+        notes["audit_txt"] = {"path": "", "status": "unavailable"}
+        problems.append("⚠️TXT审计不可用：未找到同名TXT，不能证明TXT层通过")
     # 深审必须显式包含基础终审，不能仅凭注释声称“继承”。
     try:
         base = AF.audit_docx_only(path, ptype)
@@ -367,11 +381,15 @@ def main():
     print(f"深度审计 {len(results)} 篇: {dict(cnt)}")
     with open(args.csv, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
-        w.writerow(["文件", "终审", "问题", "正文数字", "目录行", "文献数", "重复段"])
+        w.writerow(["文件", "终审", "问题", "正文数字", "目录行", "文献数", "重复段", "TXT状态", "TXT路径", "TXT硬问题", "TXT警告"])
         for r in results:
             w.writerow([r["file"], r["verdict"], "; ".join(r["problems"]),
                         r["notes"].get("body_chars", ""), r["notes"].get("toc_lines", ""),
-                        r["notes"].get("refs", ""), len(r["notes"].get("dup_pairs", []))])
+                        r["notes"].get("refs", ""), len(r["notes"].get("dup_pairs", [])),
+                        r["notes"].get("audit_txt", {}).get("status", ""),
+                        r["notes"].get("audit_txt", {}).get("path", ""),
+                        "; ".join(r["notes"].get("audit_txt", {}).get("hard", [])),
+                        "; ".join(r["notes"].get("audit_txt", {}).get("warn", []))])
     json.dump(results, open(args.csv.replace(".csv", ".json"), "w", encoding="utf-8"), ensure_ascii=False, default=str)
     print("CSV:", args.csv)
 
