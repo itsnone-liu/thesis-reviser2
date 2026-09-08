@@ -1587,13 +1587,17 @@ def add_c_placeholder(doc, ct: dict, cn: int, reason: str = ""):
     last_p.paragraph_format.space_after = Pt(6)
 
 
-def add_c(doc, ct: dict, chart_bytes: bytes, cn: int):
+def add_c(doc, ct: dict, chart_bytes: bytes, cn):
     """向 docx 中添加图表（chart）"""
     title = ct.get("title", f"图{cn}")
     source = ct.get("data_source", "")
     p_title = doc.add_paragraph()
     p_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    r = p_title.add_run(title)  # 直接用LLM给的title原名，不再加"图{cn}"前缀
+    _cap = str(title)
+    # registry章节式编号(cn形如"5-1"字符串): 图注带编号才能与正文引用对账
+    if isinstance(cn, str) and "-" in cn and not re.match(r'^图\s?\d{1,2}[-–]\d{1,3}', _cap):
+        _cap = f"图{cn} {_cap}"
+    r = p_title.add_run(_cap)
     set_run_font(r, "宋体", 10, bold=True)
     if chart_bytes:
         try:
@@ -1626,8 +1630,8 @@ def _table_quality(ct: dict):
         return 0, 100.0
 
 
-def add_t(doc, ct: dict, tn: int):
-    """向 docx 中添加表格（table）"""
+def add_t(doc, ct: dict, tn):
+    """向 docx 中添加表格（table）。返回 {emitted,rows,cols}；调用方必须核对 emitted。"""
     title = ct.get("title", f"表{tn}")
     header_str = ct.get("header", "")
     rows_str = ct.get("rows", "")
@@ -1640,6 +1644,7 @@ def add_t(doc, ct: dict, tn: int):
         raise ValueError(f"表{tn}缺少表头，禁止静默跳过")
     num_cols = max(len(headers), 1)
     table_data = data_rows
+    _tables_before = len(doc.tables)
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     caption = title.strip()
@@ -1699,7 +1704,11 @@ def add_t(doc, ct: dict, tn: int):
                         _va.set(_qn('w:val'), 'center')
                 i = j + 1
     except Exception as _e:
-        print(f"分组表合并(忽略): {_e}")
+        # 合并失败必须可见并进返回值，不能只打印(视觉错位但receipt不知情)
+        print(f"分组表合并失败: {_e}")
+        merge_error = str(_e)[:120]
+    else:
+        merge_error = ""
     if source:
         p_s = doc.add_paragraph()
         p_s.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -1707,6 +1716,10 @@ def add_t(doc, ct: dict, tn: int):
         set_run_font(r, "宋体", 9)
     last_p = doc.add_paragraph()
     last_p.paragraph_format.space_after = Pt(6)
+    # emitted必须以docx实际新增了表格为准，计数器不可信
+    emitted = len(doc.tables) - _tables_before >= 1
+    return {"emitted": emitted, "rows": 1 + len(table_data), "cols": num_cols,
+            "merge_error": merge_error, "label": str(tn)}
 
 
 # ==================== 图片生成 ====================
@@ -2650,7 +2663,11 @@ def add_drawing_image(doc, drawing: dict, img_path: str, dn: int, skip_title: bo
     if not skip_title:
         p_title = doc.add_paragraph()
         p_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        r = p_title.add_run(title)  # 直接用LLM给的title原名，不再加"图{dn}"前缀
+        _cap = str(title)
+        # registry章节式编号(dn形如"5-1"字符串): 正文引"图5-1"时图注必须带编号
+        if isinstance(dn, str) and "-" in dn and not re.match(r'^图\s?\d{1,2}[-–]\d{1,3}', _cap):
+            _cap = f"图{dn} {_cap}"
+        r = p_title.add_run(_cap)
         set_run_font(r, "宋体", 10, bold=True)
     try:
         doc.add_picture(img_path, width=Cm(14))
@@ -3129,6 +3146,17 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
     )
     els.sort(key=lambda x: x[0])
 
+    # 图表编号registry: 正文引用是章节式(图5-1)时, 图注编号必须跟章节走,
+    # 否则标签顺序编号(id=1..12)渲染出的"图1"与正文引用全数悬空
+    from figure_registry import build_registry, registry_summary
+    _registry = build_registry(full_text, els)
+    _fig_labels = _registry.get("labels", {})
+    _rs = registry_summary(_registry)
+    if _rs:
+        print(f"  [图表registry] {_rs}")
+    if _registry.get("unbound_refs"):
+        print(f"  ⚠ [图表registry] 引用无对应标签: {_registry['unbound_refs'][:6]}")
+
     parts, le = [], 0
     for s, e, t, d in els:
         if s > le:
@@ -3167,6 +3195,11 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
         "drawings": {"total": 0, "ok": 0, "placeholder": 0, "missing_image": []},
         "postflight": {"docx_valid": False, "mismatches": []},
         "figures_missing_tags": figures_missing_tags,  # 0908: 自报清单有但无标签的图/表
+        "figure_registry": {
+            "scheme": _registry.get("scheme"),
+            "unbound_refs": _registry.get("unbound_refs", []),
+            "labels": dict(sorted(_fig_labels.items())) if _fig_labels else {},
+        },
         "guard": {"status": "ok" if isinstance(guard_report, dict) else "failed", "errors": []},
         "consistency": {"status": "ok" if isinstance(consistency_report, dict) else "failed", "errors": []},
     }
@@ -3187,33 +3220,42 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
         }
 
     for pt, ct in parts:
+        # registry编号优先(章节式); text part无start_pos, 仅标签元素查registry
+        _lab = _fig_labels.get(ct.get("start_pos")) if isinstance(ct, dict) else None
         if pt == "chart":
             cn += 1
+            _num = _lab if _registry.get("scheme") == "chapter" and _lab else cn
             receipt["charts"]["total"] += 1
             try:
                 cb = chart_to_bytes(ct)
                 if not cb:
                     raise ValueError("图表渲染返回空(gantt/数据格式不符等)")
-                add_c(doc, ct, cb, cn)
+                add_c(doc, ct, cb, _num)
                 receipt["charts"]["ok"] += 1
             except Exception as e:
                 print(f"生成图表失败: {e}")
                 receipt["charts"]["failed"].append(
                     {"title": ct.get("title", ""), "error": str(e)[:150]})
                 try:
-                    add_c_placeholder(doc, ct, cn, str(e))
+                    add_c_placeholder(doc, ct, _num, str(e))
                     receipt["charts"]["placeholder"] += 1
                 except Exception as e2:
                     print(f"图表占位也失败: {e2}")
         elif pt == "table":
             tn += 1
+            _num = _lab if _registry.get("scheme") == "chapter" and _lab else tn
             receipt["tables"]["total"] += 1
             try:
                 nrows, empty_ratio = _table_quality(ct)
                 if nrows == 0 or empty_ratio > 50:
                     raise ValueError(f"内容残缺({nrows}行,空格率{empty_ratio:.0f}%)")
-                add_t(doc, ct, tn)
+                _tres = add_t(doc, ct, _num)
+                if not (isinstance(_tres, dict) and _tres.get("emitted")):
+                    raise ValueError("add_t未确认写入(表格缺失)")
                 receipt["tables"]["ok"] += 1
+                if _tres.get("merge_error"):
+                    receipt["tables"].setdefault("manual_review", []).append(
+                        {"title": ct.get("title", ""), "reason": f"merge_error:{_tres['merge_error']}"})
             except Exception as e:
                 print(f"生成表格失败: {e}")
                 receipt["tables"]["failed"].append(
@@ -3236,7 +3278,9 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
                         fallback_ct["header"] = "内容"
                         fallback_ct["rows"] = ""
                         fallback_ct["data"] = ";".join(toks)
-                    add_t(doc, fallback_ct, tn)
+                    _fres = add_t(doc, fallback_ct, _num)
+                    if not (isinstance(_fres, dict) and _fres.get("emitted")):
+                        raise ValueError("兜底add_t未确认写入")
                     receipt["tables"]["fallback"] += 1
                     receipt["tables"].setdefault("manual_review", []).append(
                         {"title": ct.get("title", ""), "reason": "fallback_used"})
@@ -3244,6 +3288,7 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
                     print(f"表格兜底也失败: {e2}")
         elif pt == "drawing":
             dn += 1
+            _num = _lab if _registry.get("scheme") == "chapter" and _lab else dn
             receipt["drawings"]["total"] += 1
             # 0908修复: 正文紧邻处(前一个text part末尾3行)已有同款图注 → 不再插title(防图注×2)
             _skip_title = False
@@ -3259,16 +3304,16 @@ def txt_to_docx_safe(txt_path: str, docx_path: str, update=None,
             try:
                 img_path = _lookup_drawing_image(ct, drawing_images)
                 if img_path:
-                    add_drawing_image(doc, ct, img_path, dn, skip_title=_skip_title)
+                    add_drawing_image(doc, ct, img_path, _num, skip_title=_skip_title)
                     receipt["drawings"]["ok"] += 1
                 else:
                     img_key = str(ct.get("seq") or ct.get("id") or "")
                     print(f"图纸图片缺失 key={img_key}, 使用占位图")
                     receipt["drawings"]["missing_image"].append(
                         {"title": ct.get("title", ""), "key": img_key})
-                    ph = _make_placeholder_image(ct.get("title", f"设计图{dn}"))
+                    ph = _make_placeholder_image(ct.get("title", f"设计图{_num}"))
                     try:
-                        add_drawing_image(doc, ct, ph, dn, skip_title=_skip_title)
+                        add_drawing_image(doc, ct, ph, _num, skip_title=_skip_title)
                         receipt["drawings"]["placeholder"] += 1
                     finally:
                         try:
