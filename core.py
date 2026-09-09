@@ -1818,7 +1818,8 @@ def generate_single_image(drawing: dict, save_dir: str, max_retries: int = 3) ->
 
     # mech / diagram / effect → AIHubMix GPT 生图（用户要求机械和设计均使用API）
     if _image_quota_marked(save_dir):
-        print(f"  [⚠️ 生图额度已满] 跳过GPT生图，直接本地兜底: {title}")
+        info = _image_quota_marked(save_dir)
+        print(f"  [⚠️ {_image_warning_label(info)}] 跳过AIHubMix，直接本地兜底: {title}")
     else:
         if backend in ("mech", "diagram"):
             prompt_text = _build_design_diagram_prompt(drawing)
@@ -1878,6 +1879,18 @@ def _image_quota_marked(save_dir: str) -> Optional[dict]:
 def image_quota_warning(save_dir: str) -> Optional[dict]:
     """公开接口：渲染层/审计层用它读额度告警（不存在返回None）。"""
     return _image_quota_marked(save_dir)
+
+def _image_warning_label(info: Optional[dict]) -> str:
+    """把API故障准确分级，避免401无效key被误报成额度已满。"""
+    reason = str((info or {}).get("reason", "")).lower()
+    if "401" in reason or "invalid key" in reason or "unauthorized" in reason:
+        return "AIHubMix密钥无效"
+    if "402" in reason or "余额" in reason or "balance" in reason or "insufficient" in reason:
+        return "AIHubMix余额/额度不足"
+    if "403" in reason or "429" in reason or "限流" in reason or "rate" in reason:
+        return "AIHubMix限流或额度窗口耗尽"
+    return "AIHubMix生图不可用"
+
 
 def _mark_image_quota(save_dir: str, reason: str) -> None:
     try:
