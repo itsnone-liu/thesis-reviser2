@@ -48,7 +48,7 @@ def build_fact_card(accumulated: str, paper_type: str) -> str:
                 return _CARD_HEADER + "\n".join(rows) + "\n"
         elif "机械" in (paper_type or "") or "mech" in (paper_type or "").lower():
             from mechanical_consistency import resolve_article_spec
-            spec = resolve_article_spec(accumulated)
+            spec = resolve_article_spec(accumulated) or {}
             rows = [f"- {k}: {v}" for k, v in spec.items()
                     if isinstance(v, (str, int, float)) and v and k in (
                         "part_material", "clamp_force", "fixture_material")]
