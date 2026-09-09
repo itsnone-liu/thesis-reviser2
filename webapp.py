@@ -138,8 +138,8 @@ def _repair_civil_figure_declarations(txt: str) -> str:
     # 以正文引用为准，自动发现本批次缺失的任意章节式图/表声明。
     ref_figs = set(re.findall(r'(?<![简插附纸样意标流路线效])图\s*(\d+-\d+)', txt))
     ref_tables = set(re.findall(r'表\s*(\d+-\d+)', txt))
-    missing_figs = [(num, "土木工程示意图") for num in sorted(ref_figs) if num not in declared]
-    missing_tables = [(num, "土木工程计算表") for num in sorted(ref_tables) if num not in declared_tables]
+    missing_figs = [(num, f"图{num} 土木工程示意图") for num in sorted(ref_figs) if num not in declared]
+    missing_tables = [(num, f"表{num} 土木工程计算表") for num in sorted(ref_tables) if num not in declared_tables]
     if not missing_figs and not missing_tables:
         return txt
     # 标签必须插在对应正文引用之前，不能统一追加到文末；否则 registry 会把它归到末章。
