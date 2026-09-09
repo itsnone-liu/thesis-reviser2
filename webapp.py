@@ -143,12 +143,12 @@ def _repair_civil_figure_declarations(txt: str) -> str:
     inserts = []
     next_id = 100
     for num, title in missing_figs:
-        tag = f'<drawing id="repair-{next_id}" type="civil" title="图{num} {title}" description="根据正文已引用的{title}补齐图纸声明；具体工程参数沿用正文已确立值。"/>\n'
+        tag = f'<drawing id="repair-{next_id}" type="civil" title="{title}" description="根据正文已引用的{title}补齐图纸声明；具体工程参数沿用正文已确立值。"/>\n'
         pos = re.search(rf'图\s*{re.escape(num)}', txt)
         if pos: inserts.append((pos.start(), tag))
         next_id += 1
     for num, title in missing_tables:
-        tag = f'<table id="repair-{next_id}" title="表{num} {title}" header="项目,数值" rows="正文已引用项目,详见正文计算"/>\n'
+        tag = f'<table id="repair-{next_id}" title="{title}" header="项目,数值" rows="正文已引用项目,详见正文计算"/>\n'
         pos = re.search(rf'表\s*{re.escape(num)}', txt)
         if pos: inserts.append((pos.start(), tag))
         next_id += 1

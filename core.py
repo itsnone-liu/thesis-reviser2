@@ -1999,7 +1999,7 @@ def classify_drawing_backend(drawing: dict) -> str:
         "行程", "参数", "尺寸", "标注", "公差", "motion", "force", "assembly", "parameter", "structure"
     ]
     # 土木/建筑优先 —— 归入diagram分支（GPT工程制图生图）
-    if any(k in text for k in civil_keywords):
+    if str(drawing.get("type", "")).lower() in ("civil", "土木", "建筑") or any(k in text for k in civil_keywords):
         return "diagram"
     if any(k in text for k in diagram_keywords):
         return "diagram"
