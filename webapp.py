@@ -129,15 +129,13 @@ def _repair_civil_figure_declarations(txt: str) -> str:
     import re
     if "土木" not in txt[:3000] and "<drawing" not in txt:
         return txt
-    declared = set(re.findall(r'<drawing[^>]*title=["\']图(\\d+-\\d+)', txt))
-    declared_tables = set(re.findall(r'<table[^>]*title=["\']表(\\d+-\\d+)', txt))
-    missing_figs = []
-    for num, title in (("1-1", "建筑平面柱网布置示意图"), ("3-1", "结构平面布置图")):
-        if re.search(rf"图{re.escape(num)}", txt) and num not in declared:
-            missing_figs.append((num, title))
-    missing_tables = []
-    if re.search(r"表3-3", txt) and "3-3" not in declared_tables:
-        missing_tables.append(("3-3", "各组合下底层柱最大轴力对比表"))
+    declared = set(re.findall(r'<drawing[^>]*title=["\']图(\d+-\d+)', txt))
+    declared_tables = set(re.findall(r'<table[^>]*title=["\']表(\d+-\d+)', txt))
+    # 以正文引用为准，自动发现本批次缺失的任意章节式图/表声明。
+    ref_figs = set(re.findall(r'(?<![简插附纸样意标流路线效])图\\s*(\d+-\d+)', txt))
+    ref_tables = set(re.findall(r'表\\s*(\d+-\d+)', txt))
+    missing_figs = [(num, "正文引用图" + num) for num in sorted(ref_figs) if num not in declared]
+    missing_tables = [(num, "正文引用表" + num) for num in sorted(ref_tables) if num not in declared_tables]
     if not missing_figs and not missing_tables:
         return txt
     block = []
