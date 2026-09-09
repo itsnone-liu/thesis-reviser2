@@ -2662,6 +2662,7 @@ def generate_all_images(drawings: list, save_dir: str, max_workers: int = 2) -> 
                 os.remove(spec_path)
                 payload = json.loads(proc.stdout.strip().splitlines()[-1]) if proc.stdout.strip() else {}
                 path = payload.get("path") if proc.returncode == 0 else None
+                if path and not os.path.exists(path): path = None
             else:
                 path = generate_single_image(d, save_dir)
         except Exception as exc:
