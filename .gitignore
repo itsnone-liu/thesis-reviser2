@@ -13,6 +13,8 @@ __pycache__/
 # Generated outputs
 output/
 论文终版/
+data/
+
 
 # Temporary and backup files
 *.tmp
