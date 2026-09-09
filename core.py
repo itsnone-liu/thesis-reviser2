@@ -1801,12 +1801,14 @@ def generate_single_image(drawing: dict, save_dir: str, max_retries: int = 3) ->
     backend = classify_drawing_backend(drawing)
     # 土木/结构图优先使用确定性本地工程示意图，避免图片API失效时产出占位图。
     if backend == "diagram":
+        # 服务器部署默认只使用本地确定性工程图；图片API失败会反复重试并造成巨大内存/时间峰值。
         try:
             local_path = generate_diagram_image(drawing, save_dir)
             if local_path and os.path.exists(local_path) and not _is_blank_image(local_path):
                 return local_path
         except Exception as exc:
-            print(f"本地工程图后端失败，转图片API: {exc}")
+            print(f"本地工程图后端失败，跳过图片API: {exc}")
+        return None
         prompt_text = _build_design_diagram_prompt(drawing)
         print(f"  [GPT图示] 正在生成: {title}")
     else:
