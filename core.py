@@ -6,7 +6,7 @@ LLM调用、DOCX排版工具、图表/图片渲染、标签解析
 所有模块（profile/generator/renderer/reviser）都基于此层
 """
 import os, re, io, json, time, uuid, threading, shutil, base64
-import subprocess
+import subprocess, sys
 from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Tuple
