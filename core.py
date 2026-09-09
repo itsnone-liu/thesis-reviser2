@@ -2655,7 +2655,15 @@ def generate_all_images(drawings: list, save_dir: str, max_workers: int = 2) -> 
     for d in drawings:
         did = str(d["seq"])
         try:
-            path = generate_single_image(d, save_dir)
+            if os.environ.get("ISOLATE_DRAWING_PROCESS", "1") == "1":
+                spec_path = os.path.join(save_dir, f".drawing_{did}.json")
+                with open(spec_path, "w", encoding="utf-8") as fh: json.dump({"drawing":d,"save_dir":save_dir}, fh, ensure_ascii=False)
+                proc = subprocess.run([sys.executable, os.path.join(os.path.dirname(__file__), "image_task.py"), spec_path], capture_output=True, text=True, timeout=180)
+                os.remove(spec_path)
+                payload = json.loads(proc.stdout.strip().splitlines()[-1]) if proc.stdout.strip() else {}
+                path = payload.get("path") if proc.returncode == 0 else None
+            else:
+                path = generate_single_image(d, save_dir)
         except Exception as exc:
             print(f"图纸生成失败 key={did}: {exc}")
             path = None
