@@ -34,6 +34,7 @@ from audit_final import audit_docx_only
 import caselib
 from law_pilot import polish_title, polish_title_t2, law_audit
 from profile import generate_profile
+from core import extract_drawings_from_text
 
 app = FastAPI(title="个人论文生成系统 V2")
 COOKIE = "thesis_sid"
@@ -132,8 +133,8 @@ def _repair_civil_figure_declarations(txt: str) -> str:
     declared = set(re.findall(r'<drawing[^>]*title=["\']图(\d+-\d+)', txt))
     declared_tables = set(re.findall(r'<table[^>]*title=["\']表(\d+-\d+)', txt))
     # 以正文引用为准，自动发现本批次缺失的任意章节式图/表声明。
-    ref_figs = set(re.findall(r'(?<![简插附纸样意标流路线效])图\\s*(\d+-\d+)', txt))
-    ref_tables = set(re.findall(r'表\\s*(\d+-\d+)', txt))
+    ref_figs = set(re.findall(r'(?<![简插附纸样意标流路线效])图\s*(\d+-\d+)', txt))
+    ref_tables = set(re.findall(r'表\s*(\d+-\d+)', txt))
     missing_figs = [(num, "正文引用图" + num) for num in sorted(ref_figs) if num not in declared]
     missing_tables = [(num, "正文引用表" + num) for num in sorted(ref_tables) if num not in declared_tables]
     if not missing_figs and not missing_tables:
