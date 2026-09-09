@@ -139,16 +139,22 @@ def _repair_civil_figure_declarations(txt: str) -> str:
     missing_tables = [(num, "正文引用表" + num) for num in sorted(ref_tables) if num not in declared_tables]
     if not missing_figs and not missing_tables:
         return txt
-    block = []
+    # 标签必须插在对应正文引用之前，不能统一追加到文末；否则 registry 会把它归到末章。
+    inserts = []
     next_id = 100
     for num, title in missing_figs:
-        block.append(f'<drawing id="repair-{next_id}" type="civil" title="图{num} {title}" description="根据正文已引用的{title}补齐图纸声明；具体工程参数沿用正文已确立值。"/>')
+        tag = f'<drawing id="repair-{next_id}" type="civil" title="图{num} {title}" description="根据正文已引用的{title}补齐图纸声明；具体工程参数沿用正文已确立值。"/>\n'
+        pos = re.search(rf'图\s*{re.escape(num)}', txt)
+        if pos: inserts.append((pos.start(), tag))
         next_id += 1
     for num, title in missing_tables:
-        block.append(f'<table id="repair-{next_id}" title="表{num} {title}" header="项目,数值" rows="正文已引用项目,详见正文计算"/>')
+        tag = f'<table id="repair-{next_id}" title="表{num} {title}" header="项目,数值" rows="正文已引用项目,详见正文计算"/>\n'
+        pos = re.search(rf'表\s*{re.escape(num)}', txt)
+        if pos: inserts.append((pos.start(), tag))
         next_id += 1
-    marker = "\n\n[REPAIRED_CIVIL_ARTIFACTS]\n" + "\n".join(block) + "\n[/REPAIRED_CIVIL_ARTIFACTS]\n"
-    return txt + marker
+    for pos, tag in sorted(inserts, reverse=True):
+        txt = txt[:pos] + tag + txt[pos:]
+    return txt
 
 def run_generation(tid, profile, ptype, cover):
     folder = OUT / str(profile.get("user_id", "0")) / tid; folder.mkdir(parents=True, exist_ok=True)
