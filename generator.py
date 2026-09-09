@@ -1727,6 +1727,67 @@ def _check_calculation_consistency(body: str, chapter_name: str, machine_spec: d
             print(f"  [一致性检查] 重写失败：{e}")
     return body
 
+def _unify_mech_gate_conflicts(body: str, prefix: str, errs: list, spec: dict):
+    """确定性统一章节内同名参数多值(机械检查点残留冲突的最后一道自动修复)。
+    基准值优先级: machine_spec > 先前章节已确立值 > 出现次数多数 > 首个值。
+    只改当前章body(先前章节视为既定事实)；改写锚定参数自己的抽取正则，
+    不做裸数字替换以免误伤无关数值。返回(新body, 残留errs)。"""
+    import re as _re
+    try:
+        from mechanical_consistency import MECH_FACT_PATTERNS, extract_mechanical_facts, validate_mechanical_text, _norm
+    except Exception:
+        return body, errs
+    prefix_facts = extract_mechanical_facts(prefix) if prefix.strip() else {}
+
+    def _pick(key, vals):
+        sv = spec.get(key)
+        if sv is not None:
+            sv_s = _norm(str(sv)).rstrip("N")
+            for v in vals:
+                if _norm(v).rstrip("N") == sv_s:
+                    return v
+        prior = prefix_facts.get(key) or []
+        for v in prior:
+            if v in vals:
+                return v
+        # 多数票(前缀+本章合计)
+        counts = {}
+        for v in prior:
+            counts[v] = counts.get(v, 0) + 2   # 先前章节权重更高
+        for v in vals:
+            counts[v] = counts.get(v, 0) + 1
+        best = max(counts.items(), key=lambda kv: kv[1])[0]
+        return best if best in vals else vals[0]
+
+    changed = 0
+    for e in errs:
+        m = _re.match(r"(\w+)\s*:\s*\[([^\]]*)\]", str(e).strip())
+        if not m:
+            continue
+        key, raw_vals = m.group(1), m.group(2)
+        vals = [v.strip().strip("'\"") for v in raw_vals.split(",") if v.strip().strip("'\"")]
+        pat = MECH_FACT_PATTERNS.get(key)
+        if not pat or len(vals) < 2:
+            continue
+        canon = _pick(key, vals)
+        canon_num = canon.rstrip("N")
+        # 倒序替换避免偏移失效
+        for fm in sorted(_re.finditer(pat, body, _re.I), key=lambda x: -x.start()):
+            try:
+                old_num = _norm(fm.group(1)).rstrip("N")
+            except Exception:
+                continue
+            if old_num != canon_num and old_num in [_norm(v).rstrip("N") for v in vals]:
+                st, en = fm.start(1), fm.end(1)
+                body = body[:st] + canon_num + body[en:]
+                changed += 1
+    if changed:
+        rep = validate_mechanical_text(prefix + "\n" + body)
+        remaining = [f"{c.get('key')}: {c.get('values')}"[:100] for c in rep.get("conflicts", [])]
+        return body, remaining
+    return body, errs
+
+
 def _generate_mechanical(profile: dict, update) -> str:
     """生成机械设计类论文"""
     update("正在生成大纲...", 3)
@@ -1786,7 +1847,15 @@ def _generate_mechanical(profile: dict, update) -> str:
                 if len(errs2) < len(errs):
                     body, chapter_json, errs = rbody, rjson, errs2
                 if errs:
-                    raise RuntimeError(f"机械第{num}章检查点重写后仍有冲突: {errs}")
+                    # 2026-09-09机械验收教训: LLM重写一次后常仍残留同名参数双值
+                    # (如clamp_force_required 6800/6200)，一票否决会炸掉54%进度的
+                    # 整个任务。先做确定性统一(spec>先前章节>多数票)，残留则告警放行
+                    # (下游渲染一致性守卫+终审仍是安全网)。
+                    body, errs = _unify_mech_gate_conflicts(
+                        body, "\n".join(b for _, b, _ in chapters_content), errs, machine_spec)
+                if errs:
+                    update(f"第{num}章残留一致性告警{len(errs)}项(已自动统一能改的)，继续生成", pct)
+                    print(f"⚠ [机械一致性] 第{num}章残留冲突(放行): {errs}")
         except ImportError as exc:
             raise RuntimeError(f"机械章节检查点不可用: {exc}") from exc
         chapters_content.append((name, body, chapter_json))

@@ -351,12 +351,17 @@ def worker():
             run_generation(tid, profile, r["paper_type"], json.loads(r["cover_json"] or "{}"))
         finally: TASK_Q.task_done()
 
+_START_LOCK = threading.Lock()   # start_task查-插竞态防护(全局单任务规则)
+
 def start_task(user_id, ptype, profile, cover=None, title=""):
-    with db() as c:
+    with _START_LOCK, db() as c:
         used = c.execute("SELECT COUNT(*) FROM tasks WHERE user_id=? AND created_at LIKE ? AND status NOT IN ('error','interrupted')", (user_id, now()[:10] + "%")).fetchone()[0]
         if used >= DAILY_LIMIT: raise HTTPException(429, f"今日生成次数已达上限({DAILY_LIMIT})")
-        active = c.execute("SELECT 1 FROM tasks WHERE user_id=? AND status IN ('queue','running','waiting_quota')", (user_id,)).fetchone()
-        if active: raise HTTPException(409, "你已有任务在队列中")
+        # 全局单任务：3.8G小机不能并行生成（曾因并行峰值叠加触发OOM）。
+        # 任何用户的任务进行中，新提交一律提示等待。(2026-09-09用户要求)
+        active = c.execute("SELECT paper_type, progress, message FROM tasks WHERE status IN ('queue','running','waiting_quota') ORDER BY created_at LIMIT 1").fetchone()
+        if active:
+            raise HTTPException(409, f"当前有任务正在生成中（{active['paper_type']} {active['progress']}%），请等待完成后再提交")
         tid = uuid.uuid4().hex
         c.execute("INSERT INTO tasks(id,user_id,kind,paper_type,title,profile_json,cover_json,status,message,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
                   (tid,user_id,"generate",ptype,title,json.dumps(profile,ensure_ascii=False),json.dumps(cover or {},ensure_ascii=False),"queue","排队中",now()))

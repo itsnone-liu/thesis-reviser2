@@ -61,21 +61,24 @@ def validate_mechanical_spec(spec: Dict[str, Any]) -> Dict[str, Any]:
     return {"ok": not errors, "errors": errors, "warnings": warnings, "spec": spec}
 
 
+MECH_FACT_PATTERNS = {
+    "functional_hole_diameter": r"(?:耳孔|安装孔)[^。；\n]{0,8}?(?:孔径|直径)?[^。；\n]{0,5}?(?:Φ|φ)?\s*(\d+(?:\.\d+)?)\s*mm",
+    "process_hole_diameter": r"(?:定位孔|工艺孔|零件孔)(?:的基本尺寸)?[^。；\n]{0,12}?(?:Φ|φ)\s*(\d+(?:\.\d+)?)\s*mm",
+    "locator_pin_diameter": r"(?:定位销|圆柱销|菱形销)直径[^。；\n]{0,12}?(?:Φ|φ)?\s*(\d+(?:\.\d+)?)\s*mm",
+    "functional_hole_center_distance": r"(?:耳孔|安装孔)[^。；\n]{0,8}?(?:中心距|孔距)[^。；\n]{0,8}?(\d+(?:\.\d+)?)\s*mm",
+    "process_hole_center_distance": r"(?:定位孔|工艺孔|两销)[^。；\n]{0,12}?(?:中心距|孔距)[^。；\n]{0,8}?(\d+(?:\.\d+)?)\s*mm",
+    "fixture_dimensions": r"(?:夹具体|外形尺寸)[^。；\n]{0,25}?(\d+\s*[×x]\s*\d+\s*[×x]\s*\d+)\s*mm",
+    "clamp_force_required": r"(?:最小夹紧力|所需最小夹紧力)[^。；\n]{0,15}?(\d+(?:\.\d+)?)\s*N",
+    "clamp_force_design": r"(?:实际设计夹紧力|设计夹紧力|夹紧力取)[^。；\n]{0,15}?(\d+(?:\.\d+)?)\s*N",
+    "clamp_force_capacity": r"(?:夹紧能力|轴向夹紧力)[^。；\n]{0,20}?(\d+(?:\.\d+)?)\s*(N|kN)",
+    "part_material": r"(?:工件材料|零件材料|毛坯[^。；\n]{0,8}?采用|通常采用)[^。；\n]{0,12}?((?:35钢|45钢|40Cr|ZG\d+))",
+}
+
+
 def extract_mechanical_facts(text: str) -> Dict[str, List[str]]:
     """Extract high-value dimensions/materials/forces for conflict reporting."""
     facts: Dict[str, List[str]] = defaultdict(list)
-    patterns = {
-        "functional_hole_diameter": r"(?:耳孔|安装孔)[^。；\n]{0,8}?(?:孔径|直径)?[^。；\n]{0,5}?(?:Φ|φ)?\s*(\d+(?:\.\d+)?)\s*mm",
-        "process_hole_diameter": r"(?:定位孔|工艺孔|零件孔)(?:的基本尺寸)?[^。；\n]{0,12}?(?:Φ|φ)\s*(\d+(?:\.\d+)?)\s*mm",
-        "locator_pin_diameter": r"(?:定位销|圆柱销|菱形销)直径[^。；\n]{0,12}?(?:Φ|φ)?\s*(\d+(?:\.\d+)?)\s*mm",
-        "functional_hole_center_distance": r"(?:耳孔|安装孔)[^。；\n]{0,8}?(?:中心距|孔距)[^。；\n]{0,8}?(\d+(?:\.\d+)?)\s*mm",
-        "process_hole_center_distance": r"(?:定位孔|工艺孔|两销)[^。；\n]{0,12}?(?:中心距|孔距)[^。；\n]{0,8}?(\d+(?:\.\d+)?)\s*mm",
-        "fixture_dimensions": r"(?:夹具体|外形尺寸)[^。；\n]{0,25}?(\d+\s*[×x]\s*\d+\s*[×x]\s*\d+)\s*mm",
-        "clamp_force_required": r"(?:最小夹紧力|所需最小夹紧力)[^。；\n]{0,15}?(\d+(?:\.\d+)?)\s*N",
-        "clamp_force_design": r"(?:实际设计夹紧力|设计夹紧力|夹紧力取)[^。；\n]{0,15}?(\d+(?:\.\d+)?)\s*N",
-        "clamp_force_capacity": r"(?:夹紧能力|轴向夹紧力)[^。；\n]{0,20}?(\d+(?:\.\d+)?)\s*(N|kN)",
-        "part_material": r"(?:工件材料|零件材料|毛坯[^。；\n]{0,8}?采用|通常采用)[^。；\n]{0,12}?((?:35钢|45钢|40Cr|ZG\d+))",
-    }
+    patterns = MECH_FACT_PATTERNS
     for key, pattern in patterns.items():
         for match in re.finditer(pattern, text, re.I):
             value = _norm(match.group(1))
