@@ -1,0 +1,19 @@
+[Unit]
+Description=Thesis Generator Web Service V2
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/thesis-reviser2
+EnvironmentFile=-/opt/thesis-reviser2/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PORT=8000
+ExecStart=/usr/bin/python3 /opt/thesis-reviser2/webapp.py
+Restart=always
+RestartSec=5
+# Keep OpenClaw stable on the 3.8G host.
+MemoryMax=1800M
+
+[Install]
+WantedBy=multi-user.target
