@@ -27,6 +27,8 @@ if _env.exists():
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from generator import generate
 from renderer import render
@@ -37,6 +39,8 @@ from profile import generate_profile
 from core import extract_drawings_from_text
 
 app = FastAPI(title="个人论文生成系统 V2")
+app.mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static")
+templates = Jinja2Templates(directory=str(ROOT / "templates"))
 COOKIE = "thesis_sid"
 # 不限制每日生成次数；仅保留全局单任务并行保护。
 TASK_Q: queue.Queue[str] = queue.Queue()
@@ -481,6 +485,14 @@ def start_gen(x: GenerateRequest, request: Request):
     if x.type not in ("管理","设计","机械","土木"): raise HTTPException(400,"该接口支持管理、设计、机械、土木；法学请使用出题确认")
     tid=start_task(u["id"],x.type,x.profile,x.cover,x.profile.get("title","")); return {"task_id":tid,"status":"queue"}
 
+@app.get("/api/system/status")
+def system_status(request: Request):
+    user_from_request(request)
+    with db() as c:
+        r = c.execute("SELECT paper_type,progress,message FROM tasks WHERE status IN ('queue','running','waiting_quota') ORDER BY created_at LIMIT 1").fetchone()
+    if not r: return {"busy": False}
+    return {"busy": True, "paper_type": r["paper_type"], "message": "当前有任务正在生成"}
+
 @app.get("/api/status/{tid}")
 def status(tid: str, request: Request):
     u=user_from_request(request)
@@ -537,14 +549,24 @@ def admin_stats(request: Request):
         q=c.execute("SELECT COUNT(*) n FROM tasks WHERE status IN ('queue','running','waiting_quota')").fetchone()["n"]
     return {"users":total,"tasks":tasks,"by_type":by,"queue":q}
 
+def page(request: Request, page_name: str, **context):
+    return templates.TemplateResponse(request=request, name="base.html", context={"page": page_name, **context})
+
 @app.get("/", response_class=HTMLResponse)
-def home(): return PAGE
+def home(request: Request): return page(request, "dashboard")
 @app.get("/login", response_class=HTMLResponse)
-def login_page(): return PAGE
+def login_page(request: Request): return page(request, "login", title="登录 · 知稿")
+@app.get("/create/law", response_class=HTMLResponse)
 @app.get("/law", response_class=HTMLResponse)
-def law_page(): return PAGE
+def law_page(request: Request): return page(request, "law", title="创建法学论文 · 知稿")
+@app.get("/create/{paper_type}", response_class=HTMLResponse)
+def create_page(paper_type: str, request: Request): return page(request, "create", paper_type=paper_type, title="创建论文 · 知稿")
+@app.get("/tasks", response_class=HTMLResponse)
+def tasks_page(request: Request): return page(request, "tasks", title="我的任务 · 知稿")
+@app.get("/tasks/{task_id}", response_class=HTMLResponse)
+def task_page(task_id: str, request: Request): return page(request, "task", task_id=task_id, title="任务详情 · 知稿")
 @app.get("/admin", response_class=HTMLResponse)
-def admin_page(): return PAGE
+def admin_page(request: Request): return page(request, "admin", title="管理控制台 · 知稿")
 
 PAGE = r'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>论文生成系统</title><style>body{font-family:Arial,"Microsoft Yahei";max-width:980px;margin:30px auto;padding:0 18px;color:#243247}nav{display:flex;gap:16px;margin-bottom:24px}button,a{padding:9px 14px;border:0;border-radius:6px;background:#2563eb;color:white;text-decoration:none;cursor:pointer}input,select,textarea{display:block;width:100%;padding:9px;margin:6px 0 12px;box-sizing:border-box}section{background:#f8fafc;border:1px solid #dbe3ee;border-radius:10px;padding:18px;margin:14px 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}.major{min-height:100px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;font-size:28px}.major strong{font-size:17px}.card{padding:20px;border-radius:9px;background:white;border:1px solid #dbe3ee}.muted{color:#64748b}.err{color:#b91c1c}.warn{color:#92400e;background:#fef3c7;padding:8px;border-radius:6px}.ok{color:#047857;white-space:pre-wrap}.task{background:white;border:1px solid #dbe3ee;border-radius:9px;padding:14px;margin:10px 0}.task-head{display:flex;justify-content:space-between}.task-title{color:#475569}.badge{padding:3px 9px;border-radius:12px;background:#e2e8f0;font-size:13px}.badge.done{background:#dcfce7;color:#166534}.badge.error{background:#fee2e2;color:#991b1b}.badge.running{background:#dbeafe;color:#1d4ed8}.progress{height:8px;background:#e2e8f0;border-radius:6px;overflow:hidden}.progress i{display:block;height:100%;background:#2563eb}.downloads{margin:10px 0}.download{display:inline-block;margin-right:8px;font-size:13px}</style></head><body><nav><a href="/">工作台</a><a href="/law">法学智能出题</a><a href="/admin">管理端</a><button onclick="logout()">退出</button></nav><div id="app"></div><script>
 const $=id=>document.getElementById(id), api=async(u,o={})=>{let r=await fetch(u,{credentials:'include',...o});let d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.detail||'请求失败');return d};

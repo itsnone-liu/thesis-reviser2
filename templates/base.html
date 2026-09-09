@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#173b63">
+  <title>{{ title or '知稿 · 智能论文工作台' }}</title>
+  <link rel="stylesheet" href="/static/css/app.css?v=1">
+</head>
+<body data-page="{{ page }}"{% if paper_type %} data-paper-type="{{ paper_type }}"{% endif %}{% if task_id %} data-task-id="{{ task_id }}"{% endif %}>
+<header class="topbar">
+  <a class="brand" href="/"><span class="brand-mark">知</span><span><b>知稿</b><small>智能论文工作台</small></span></a>
+  <nav id="main-nav" class="nav hidden">
+    <a href="/">工作台</a><a href="/tasks">我的任务</a><a id="admin-link" class="hidden" href="/admin">管理控制台</a>
+    <button class="ghost" type="button" onclick="App.logout()">退出</button>
+  </nav>
+</header>
+<main id="app" class="shell"><div class="page-loading"><span class="spinner"></span>正在加载…</div></main>
+<div id="toast" class="toast hidden"></div>
+<script src="/static/js/app.js?v=1" defer></script>
+</body>
+</html>
