@@ -131,15 +131,15 @@ def _repair_civil_figure_declarations(txt: str) -> str:
     if "土木" not in txt[:3000] and "<drawing" not in txt:
         return txt
     # 清理旧版本追加的自描述补丁，避免历史正文在重试时累积双重编号。
-    txt = re.sub(r'<drawing[^>]*title="正文引用图[^>]*?/>' , "", txt)
-    txt = re.sub(r'<table[^>]*title="正文引用表[^>]*?/>' , "", txt)
+    txt = re.sub(r'<drawing[^>]*id="repair-[^"]+"[^>]*/>', "", txt)
+    txt = re.sub(r'<table[^>]*id="repair-[^"]+"[^>]*/>', "", txt)
     declared = set(re.findall(r'<drawing[^>]*title=["\']图(\d+-\d+)', txt))
     declared_tables = set(re.findall(r'<table[^>]*title=["\']表(\d+-\d+)', txt))
     # 以正文引用为准，自动发现本批次缺失的任意章节式图/表声明。
     ref_figs = set(re.findall(r'(?<![简插附纸样意标流路线效])图\s*(\d+-\d+)', txt))
     ref_tables = set(re.findall(r'表\s*(\d+-\d+)', txt))
-    missing_figs = [(num, "正文引用图" + num) for num in sorted(ref_figs) if num not in declared]
-    missing_tables = [(num, "正文引用表" + num) for num in sorted(ref_tables) if num not in declared_tables]
+    missing_figs = [(num, "土木工程示意图") for num in sorted(ref_figs) if num not in declared]
+    missing_tables = [(num, "土木工程计算表") for num in sorted(ref_tables) if num not in declared_tables]
     if not missing_figs and not missing_tables:
         return txt
     # 标签必须插在对应正文引用之前，不能统一追加到文末；否则 registry 会把它归到末章。
