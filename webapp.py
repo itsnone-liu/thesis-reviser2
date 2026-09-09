@@ -3,7 +3,7 @@
 部署入口：python webapp.py；生产由 systemd/uvicorn 启动。
 """
 from __future__ import annotations
-import os, sys, json, time, uuid, queue, sqlite3, hashlib, secrets, threading
+import os, sys, json, time, uuid, queue, sqlite3, hashlib, secrets, threading, subprocess
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional
@@ -165,8 +165,19 @@ def run_generation(tid, profile, ptype, cover):
         if ptype == "土木": txt = _repair_civil_figure_declarations(txt)
         txtpath = folder / "00_完整论文.txt"; txtpath.write_text(txt, encoding="utf-8")
         docx = folder / "论文终稿.docx"
-        render(str(txtpath), str(docx), ptype, cover if ptype == "法学" else None, None, progress)
-        audit = audit_docx_only(str(docx), ptype)
+        # 将高峰内存的渲染/审计放入独立进程；正文生成进程退出后由OS回收其全部内存。
+        spec = folder / "render_spec.json"
+        spec.write_text(json.dumps({"txt":str(txtpath),"docx":str(docx),"ptype":ptype,"cover":cover if ptype == "法学" else None},ensure_ascii=False),encoding="utf-8")
+        proc = subprocess.Popen([sys.executable, str(ROOT / "render_task.py"), str(spec)], cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        audit = None
+        for line in proc.stdout:
+            try:
+                event = json.loads(line)
+                if event.get("message"): progress(event["message"], event.get("progress", 90))
+                if event.get("done"): audit = event["audit"]
+            except Exception: pass
+        rc = proc.wait()
+        if rc != 0 or audit is None: raise RuntimeError(f"独立渲染进程失败(rc={rc})")
         if ptype == "法学":
             cases = profile.get("cluster") or ([profile.get("case")] if profile.get("case") else [])
             audit["law"] = law_audit(txt, cases)
