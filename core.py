@@ -1798,7 +1798,7 @@ def generate_single_image(drawing: dict, save_dir: str, max_retries: int = 3) ->
     - civil   土木/建筑 → 本地确定性工程图（服务器3.8G小机实测最稳）
     - mech    机械     → GPT工程图API（2026-09-09用户拍板），失败/额度满→本地兜底
     - effect  效果图   → GPT效果图API，失败/额度满→本地兜底
-    - diagram 设计图示 → 本地图示
+    - diagram 设计图示 → AIHubMix GPT图示API（失败/额度满→本地兜底）
     返回本地路径；额度耗尽会在 save_dir 打标记(.image_quota_exhausted)供上层告警。
     """
     img_type = drawing.get("type", "设计图")
@@ -1806,9 +1806,8 @@ def generate_single_image(drawing: dict, save_dir: str, max_retries: int = 3) ->
     description = drawing.get("description", "")
     backend = classify_drawing_backend(drawing)
 
-    if backend in ("civil", "diagram"):
-        # 土木/建筑与设计图示：本地确定性后端；图片API反复重试会造成
-        # 巨大时间/内存峰值（2026-09-09 OOM 根因链之一）。
+    if backend == "civil":
+        # 土木/建筑继续使用本地确定性工程图，避免汤圆小内存峰值。
         try:
             local_path = generate_diagram_image(drawing, save_dir)
             if local_path and os.path.exists(local_path) and not _is_blank_image(local_path):
@@ -1817,13 +1816,14 @@ def generate_single_image(drawing: dict, save_dir: str, max_retries: int = 3) ->
             print(f"本地工程图后端失败: {exc}")
         return None
 
-    # mech / effect → GPT 生图
+    # mech / diagram / effect → AIHubMix GPT 生图（用户要求机械和设计均使用API）
     if _image_quota_marked(save_dir):
         print(f"  [⚠️ 生图额度已满] 跳过GPT生图，直接本地兜底: {title}")
     else:
-        if backend == "mech":
+        if backend in ("mech", "diagram"):
             prompt_text = _build_design_diagram_prompt(drawing)
-            print(f"  [GPT工程图] 正在生成: {title}")
+            tag = "GPT工程图" if backend == "mech" else "GPT设计图"
+            print(f"  [{tag}] 正在生成: {title}")
         else:
             prompt_text = _build_design_image_prompt(drawing)
             print(f"  [GPT效果图] 正在生成: {title}")
