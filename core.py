@@ -2649,13 +2649,16 @@ def generate_all_images(drawings: list, save_dir: str, max_workers: int = 2) -> 
                 nxt += 1
             d["seq"] = nxt
             used.add(nxt)
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        fut_map = {executor.submit(generate_single_image, d, save_dir): str(d["seq"]) for d in drawings}
-        for fut in as_completed(fut_map):
-            did = str(fut_map[fut])
-            path = fut.result()
-            if path:
-                result[did] = path
+    # 2C/3.8G 机器上并发图像生成会同时保留多个 PIL/字体对象，峰值可触发 systemd OOM；工程图串行更稳。
+    for d in drawings:
+        did = str(d["seq"])
+        try:
+            path = generate_single_image(d, save_dir)
+        except Exception as exc:
+            print(f"图纸生成失败 key={did}: {exc}")
+            path = None
+        if path:
+            result[did] = path
     print(f"图纸生成完成: {len(result)}/{len(drawings)} 成功")
     return result
 
