@@ -33,6 +33,7 @@ from renderer import render
 from audit_final import audit_docx_only
 import caselib
 from law_pilot import polish_title, polish_title_t2, law_audit
+from profile import generate_profile
 
 app = FastAPI(title="个人论文生成系统 V2")
 COOKIE = "thesis_sid"
@@ -172,6 +173,8 @@ def start_task(user_id, ptype, profile, cover=None, title=""):
 class Credentials(BaseModel): username: str; password: str
 class GenerateRequest(BaseModel):
     type: str = "管理"; profile: dict = {}; cover: dict = {}
+class ProfileRequest(BaseModel):
+    type: str = "管理"; title: str = ""; target: str = ""; major: str = ""; context: str = ""
 class TopicRequest(BaseModel): mode: str = "mix"; domain: str = ""
 class ConfirmRequest(BaseModel):
     topic_id: str
@@ -261,6 +264,15 @@ def law_confirm(x: ConfirmRequest, request: Request):
     tid=start_task(u["id"],"法学",profile,cover,chosen["title"])
     with db() as c: c.execute("UPDATE topics SET confirmed_task_id=? WHERE id=?",(tid,x.topic_id))
     return {"task_id":tid,"title":chosen["title"]}
+
+@app.post("/api/profile")
+def make_profile(x: ProfileRequest, request: Request):
+    user_from_request(request)
+    if x.type not in ("管理", "设计", "机械"):
+        raise HTTPException(400, "画像接口支持管理、设计、机械")
+    p = generate_profile(x.type, x.title, x.target, x.major, x.context)
+    if not p.get("core_problems"): p["core_problems"] = ["待补充研究问题"]
+    return p
 
 @app.post("/api/start_gen")
 def start_gen(x: GenerateRequest, request: Request):
