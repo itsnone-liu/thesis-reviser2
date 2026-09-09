@@ -208,6 +208,10 @@ def logout(request: Request):
     from fastapi.responses import JSONResponse
     out=JSONResponse({"ok":True}); out.delete_cookie(COOKIE); return out
 
+@app.get("/health")
+def health():
+    return {"ok": True, "service": "thesis-web-v2"}
+
 @app.get("/api/me")
 def me(request: Request):
     u=user_from_request(request); return {"id":u["id"],"username":u["username"],"role":u["role"]}
@@ -339,7 +343,9 @@ async function home(){try{let m=await api('/api/me'),d=await api('/api/tasks');$
 async function law(){try{await api('/api/me')}catch(e){return login()}$('app').innerHTML='<h1>法学智能出题</h1><section><select id="mode"><option value="mix">系统推荐</option><option value="T1">案例分析型</option><option value="T2">规范分析型</option></select><input id="domain" placeholder="可选法律领域，如劳动法"><button onclick="topics()">生成候选题目</button></section><section id="choices"></section>'}
 async function topics(){try{let d=await api('/api/law/topics',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:mode.value,domain:domain.value})});choices.innerHTML='<h3>请选择题目</h3>'+d.topics.map((x,i)=>'<div class="card"><b>'+x.title+'</b><p>'+x.law_type+'｜'+x.domain+'<br>'+x.case_names.join('、')+'</p><button onclick="confirmLaw(\''+d.topic_id+'\','+i+')">确认此题</button></div>').join('')}catch(e){choices.innerHTML='<p class=err>'+e.message+'</p>'}}
 async function confirmLaw(tid,i){try{let d=await api('/api/law/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({topic_id:tid,index:i,cover:{}})});location='/'}catch(e){alert(e.message)}}
-async function simple(t){alert('通用专业接口已接入，下一步补充该专业画像表单：'+t)}
+async function simple(t){
+ try{await api('/api/start_gen',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:t,profile:{title:prompt('请输入论文题目（'+t+'）')||'个人论文',major:t,company:'',industry:''},cover:{}})});location='/'}catch(e){alert(e.message)}
+}
 async function admin(){try{await api('/api/me');let [u,t,s]=await Promise.all([api('/api/admin/users'),api('/api/admin/tasks'),api('/api/admin/stats')]);$('app').innerHTML='<h1>管理员控制台</h1><section><pre>'+JSON.stringify(s,null,2)+'</pre></section><section><h3>用户</h3><pre>'+JSON.stringify(u.users,null,2)+'</pre></section><section><h3>生成结果与任务</h3><pre>'+JSON.stringify(t.tasks,null,2)+'</pre></section>'}catch(e){$('app').innerHTML='<p class=err>'+e.message+'</p>'}}
 let p=location.pathname;if(p=='/login')login();else if(p=='/law')law();else if(p=='/admin')admin();else home();
 </script></body></html>'''
