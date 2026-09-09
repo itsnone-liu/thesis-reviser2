@@ -1799,9 +1799,14 @@ def generate_single_image(drawing: dict, save_dir: str, max_retries: int = 3) ->
     title = drawing.get("title", "设计图")
     description = drawing.get("description", "")
     backend = classify_drawing_backend(drawing)
-    # 所有类型（土木、机械diagram、设计effect）都走GPT图片API
-    # 土木关键词→"diagram"分支，走工程制图风格
+    # 土木/结构图优先使用确定性本地工程示意图，避免图片API失效时产出占位图。
     if backend == "diagram":
+        try:
+            local_path = generate_diagram_image(drawing, save_dir)
+            if local_path and os.path.exists(local_path) and not _is_blank_image(local_path):
+                return local_path
+        except Exception as exc:
+            print(f"本地工程图后端失败，转图片API: {exc}")
         prompt_text = _build_design_diagram_prompt(drawing)
         print(f"  [GPT图示] 正在生成: {title}")
     else:
