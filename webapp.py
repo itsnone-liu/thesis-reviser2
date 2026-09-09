@@ -363,7 +363,7 @@ async function confirmLaw(tid,i){try{let d=await api('/api/law/confirm',{method:
 async function simple(t){
  try{await api('/api/start_gen',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:t,profile:{title:prompt('请输入论文题目（'+t+'）')||'个人论文',major:t,company:'',industry:''},cover:{}})});location='/'}catch(e){alert(e.message)}
 }
-async function admin(){try{await api('/api/me');let [u,t,s]=await Promise.all([api('/api/admin/users'),api('/api/admin/tasks'),api('/api/admin/stats')]);$('app').innerHTML='<h1>管理员控制台</h1><section><pre>'+JSON.stringify(s,null,2)+'</pre></section><section><h3>用户</h3><pre>'+JSON.stringify(u.users,null,2)+'</pre></section><section><h3>生成结果与任务</h3><pre>'+JSON.stringify(t.tasks,null,2)+'</pre></section>'}catch(e){$('app').innerHTML='<p class=err>'+e.message+'</p>'}}
+async function admin(){try{await api('/api/me');let [u,t,s]=await Promise.all([api('/api/admin/users'),api('/api/admin/tasks'),api('/api/admin/stats')]);let rows=t.tasks.map(x=>'<div class="card"><b>'+x.username+' / '+(x.paper_type||'')+'</b><p>'+ (x.title||'') +'｜'+x.status+'｜'+x.progress+'%</p><p>'+((x.files||[]).map(f=>'<a href="/download/'+x.id+'/'+encodeURIComponent(f)+'" target="_blank">下载 '+f+'</a>').join('　'))+'</p><pre>'+JSON.stringify(x.audit||{},null,2)+'</pre></div>').join('');$('app').innerHTML='<h1>管理员控制台</h1><section><pre>'+JSON.stringify(s,null,2)+'</pre></section><section><h3>用户</h3><pre>'+JSON.stringify(u.users,null,2)+'</pre></section><section><h3>生成结果与任务</h3>'+rows+'</section>'}catch(e){$('app').innerHTML='<p class=err>'+e.message+'</p>'}}
 let p=location.pathname;if(p=='/login')login();else if(p=='/law')law();else if(p=='/admin')admin();else home();
 </script></body></html>'''
 
