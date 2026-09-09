@@ -2346,7 +2346,7 @@ def generate_diagram_image(drawing: dict, save_dir: str) -> Optional[str]:
             except Exception as e:
                 print(f"机械CAD后端生成失败，回退到模板后端: {e}")
     width, height = 1400, 900
-    img = Image.new("RGB", (width, height), "white")
+    img = Image.new("RGB", (width, height), (245, 245, 245))
     draw = ImageDraw.Draw(img)
     title_font = _load_font(38, bold=True)
     box_font = _load_font(28)
