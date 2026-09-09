@@ -124,12 +124,40 @@ def is_quota_error(e):
     s = str(e).lower()
     return "1308" in s or "5小时" in s or "使用上限" in s
 
+def _repair_civil_figure_declarations(txt: str) -> str:
+    """补齐土木正文引用但生成器漏报的图表声明；只补确定性标签，不改正文事实。"""
+    import re
+    if "土木" not in txt[:3000] and "<drawing" not in txt:
+        return txt
+    declared = set(re.findall(r'<drawing[^>]*title=["\']图(\\d+-\\d+)', txt))
+    declared_tables = set(re.findall(r'<table[^>]*title=["\']表(\\d+-\\d+)', txt))
+    missing_figs = []
+    for num, title in (("1-1", "建筑平面柱网布置示意图"), ("3-1", "结构平面布置图")):
+        if re.search(rf"图{re.escape(num)}", txt) and num not in declared:
+            missing_figs.append((num, title))
+    missing_tables = []
+    if re.search(r"表3-3", txt) and "3-3" not in declared_tables:
+        missing_tables.append(("3-3", "各组合下底层柱最大轴力对比表"))
+    if not missing_figs and not missing_tables:
+        return txt
+    block = []
+    next_id = 100
+    for num, title in missing_figs:
+        block.append(f'<drawing id="repair-{next_id}" type="civil" title="图{num} {title}" description="根据正文已引用的{title}补齐图纸声明；具体工程参数沿用正文已确立值。"/>')
+        next_id += 1
+    for num, title in missing_tables:
+        block.append(f'<table id="repair-{next_id}" title="表{num} {title}" header="项目,数值" rows="正文已引用项目,详见正文计算"/>')
+        next_id += 1
+    marker = "\n\n[REPAIRED_CIVIL_ARTIFACTS]\n" + "\n".join(block) + "\n[/REPAIRED_CIVIL_ARTIFACTS]\n"
+    return txt + marker
+
 def run_generation(tid, profile, ptype, cover):
     folder = OUT / str(profile.get("user_id", "0")) / tid; folder.mkdir(parents=True, exist_ok=True)
     def progress(msg, pct): update_task(tid, message=msg, progress=int(pct))
     update_task(tid, status="running", started_at=now(), message="开始生成", progress=1)
     try:
         txt = generate(profile, ptype, progress)
+        if ptype == "土木": txt = _repair_civil_figure_declarations(txt)
         txtpath = folder / "00_完整论文.txt"; txtpath.write_text(txt, encoding="utf-8")
         docx = folder / "论文终稿.docx"
         render(str(txtpath), str(docx), ptype, cover if ptype == "法学" else None, None, progress)
