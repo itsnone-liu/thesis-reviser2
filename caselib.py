@@ -60,7 +60,7 @@ def cluster(domain: str, n: int = 4, exclude=None, rotate=None) -> list:
 def validate_case(case: dict) -> list:
     """入库体检: 必填字段/案号格式/verified标记"""
     probs = [f"缺必填字段: {f}" for f in REQUIRED_FIELDS if not str(case.get(f, "")).strip()]
-    if case.get("案号") and not re.search(r"[（(]\d{4}[）)].{0,12}第?\d+号|^指导案例\d+号$|第42?批指导", str(case["案号"])):
+    if case.get("案号") and not re.search(r"[（(]\d{4}[）)].{0,12}第?\d+号|^指导案例\d+号$|第42?批指导|^最高法典型案例·.+·案例[一二三四五六七八九十1-9]{1,3}$", str(case["案号"])):
         probs.append(f"案号格式可疑: {case['案号']}")
     if not case.get("verified"):
         probs.append("未标记verified(要素未核对)")
