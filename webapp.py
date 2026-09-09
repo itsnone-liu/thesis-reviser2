@@ -248,6 +248,11 @@ def law_topics(x: TopicRequest, request: Request):
     with db() as c: c.execute("INSERT INTO topics VALUES(?,?,?,?,?,NULL)",(tid,u["id"],json.dumps(arr,ensure_ascii=False),time.time(),time.time()+900))
     return {"topic_id":tid,"topics":[{k:v for k,v in a.items() if k not in ("cases",)} for a in arr]}
 
+@app.post("/api/law/topics/refresh")
+def law_topics_refresh(x: TopicRequest, request: Request):
+    # 候选批次有15分钟有效期；刷新直接生成新的批次并由前端替换旧批次。
+    return law_topics(x, request)
+
 @app.post("/api/law/confirm")
 def law_confirm(x: ConfirmRequest, request: Request):
     u=user_from_request(request)
