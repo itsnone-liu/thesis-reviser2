@@ -19,7 +19,8 @@ def generate_mold_drawing_svg(
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
 
     svg = []
-    svg.append(f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}mm" height="{height}mm" viewBox="0 0 {width} {height}">')
+    # 宽高禁止带物理单位(mm)：ImageMagick 按 -density 换算会产出7500万像素巨图，触发 _is_blank_image 数GB分配直接OOM(2026-09-09汤圆事故)
+    svg.append(f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">')
     svg.append('<defs>')
     svg.append('  <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto" markerUnits="strokeWidth">')
     svg.append('    <path d="M 0 0 L 10 5 L 0 10 z" fill="#000"/>')

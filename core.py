@@ -1794,42 +1794,99 @@ CRITICAL STYLE RULES:
     return prompt
 
 def generate_single_image(drawing: dict, save_dir: str, max_retries: int = 3) -> Optional[str]:
-    """调用AI图片API生成单张图纸图片，返回本地路径"""
+    """生成单张图纸：按 classify_drawing_backend 路由。
+    - civil   土木/建筑 → 本地确定性工程图（服务器3.8G小机实测最稳）
+    - mech    机械     → GPT工程图API（2026-09-09用户拍板），失败/额度满→本地兜底
+    - effect  效果图   → GPT效果图API，失败/额度满→本地兜底
+    - diagram 设计图示 → 本地图示
+    返回本地路径；额度耗尽会在 save_dir 打标记(.image_quota_exhausted)供上层告警。
+    """
     img_type = drawing.get("type", "设计图")
     title = drawing.get("title", "设计图")
     description = drawing.get("description", "")
     backend = classify_drawing_backend(drawing)
-    # 土木/结构图优先使用确定性本地工程示意图，避免图片API失效时产出占位图。
-    if backend == "diagram":
-        # 服务器部署默认只使用本地确定性工程图；图片API失败会反复重试并造成巨大内存/时间峰值。
+
+    if backend in ("civil", "diagram"):
+        # 土木/建筑与设计图示：本地确定性后端；图片API反复重试会造成
+        # 巨大时间/内存峰值（2026-09-09 OOM 根因链之一）。
         try:
             local_path = generate_diagram_image(drawing, save_dir)
             if local_path and os.path.exists(local_path) and not _is_blank_image(local_path):
                 return local_path
         except Exception as exc:
-            print(f"本地工程图后端失败，跳过图片API: {exc}")
+            print(f"本地工程图后端失败: {exc}")
         return None
-        prompt_text = _build_design_diagram_prompt(drawing)
-        print(f"  [GPT图示] 正在生成: {title}")
-    else:
-        prompt_text = _build_design_image_prompt(drawing)
-        print(f"  [GPT效果图] 正在生成: {title}")
 
-    img_path = _call_image_api(prompt_text, drawing, save_dir, max_retries)
-    if img_path and _is_blank_image(img_path):
-        try:
-            os.remove(img_path)
-        except Exception:
-            pass
-        retry_prompt = _strengthen_image_prompt(prompt_text, drawing)
-        img_path = _call_image_api(retry_prompt, drawing, save_dir, max_retries)
+    # mech / effect → GPT 生图
+    if _image_quota_marked(save_dir):
+        print(f"  [⚠️ 生图额度已满] 跳过GPT生图，直接本地兜底: {title}")
+    else:
+        if backend == "mech":
+            prompt_text = _build_design_diagram_prompt(drawing)
+            print(f"  [GPT工程图] 正在生成: {title}")
+        else:
+            prompt_text = _build_design_image_prompt(drawing)
+            print(f"  [GPT效果图] 正在生成: {title}")
+        img_path = _call_image_api(prompt_text, drawing, save_dir, max_retries)
         if img_path and _is_blank_image(img_path):
             try:
                 os.remove(img_path)
             except Exception:
                 pass
-            img_path = None
-    return img_path
+            retry_prompt = _strengthen_image_prompt(prompt_text, drawing)
+            img_path = _call_image_api(retry_prompt, drawing, save_dir, max_retries)
+            if img_path and _is_blank_image(img_path):
+                try:
+                    os.remove(img_path)
+                except Exception:
+                    pass
+                img_path = None
+        if img_path:
+            return img_path
+        # GPT失败（额度满时 _call_image_api 已打标记）：本地确定性兜底，绝不留空白
+        try:
+            local_path = generate_diagram_image(drawing, save_dir)
+            if local_path and os.path.exists(local_path) and not _is_blank_image(local_path):
+                print(f"  [本地兜底] GPT生图未成功，已用确定性工程图: {title}")
+                return local_path
+        except Exception as exc:
+            print(f"本地兜底图失败: {exc}")
+        return None
+    # 额度已满分支的兜底
+    try:
+        local_path = generate_diagram_image(drawing, save_dir)
+        if local_path and os.path.exists(local_path) and not _is_blank_image(local_path):
+            return local_path
+    except Exception as exc:
+        print(f"本地兜底图失败: {exc}")
+    return None
+
+
+# ---------- 生图额度状态（跨进程：标记文件落盘在图纸目录） ----------
+
+def _image_quota_marker_path(save_dir: str) -> str:
+    return os.path.join(save_dir, ".image_quota_exhausted")
+
+def _image_quota_marked(save_dir: str) -> Optional[dict]:
+    """额度耗尽标记存在则返回 {'reason':..., 'time':...}，否则 None。"""
+    try:
+        with open(_image_quota_marker_path(save_dir), encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+def image_quota_warning(save_dir: str) -> Optional[dict]:
+    """公开接口：渲染层/审计层用它读额度告警（不存在返回None）。"""
+    return _image_quota_marked(save_dir)
+
+def _mark_image_quota(save_dir: str, reason: str) -> None:
+    try:
+        os.makedirs(save_dir, exist_ok=True)
+        with open(_image_quota_marker_path(save_dir), "w", encoding="utf-8") as f:
+            json.dump({"reason": reason, "time": time.strftime("%Y-%m-%d %H:%M:%S")}, f, ensure_ascii=False)
+    except Exception:
+        pass
+    print(f"  [⚠️ 生图额度已满] {reason}；本任务后续图纸将直接使用本地确定性兜底")
 
 
 def _build_design_image_prompt(drawing: dict) -> str:
@@ -1909,6 +1966,9 @@ HARD FAIL CONDITIONS:
 def _call_image_api(prompt_text: str, drawing: dict, save_dir: str, max_retries: int = 6) -> Optional[str]:
     if not IMAGE_API_KEY:
         raise RuntimeError("IMAGE_API_KEY is not set")
+    # 额度已满快速跳过：本任务此前已判定额度耗尽(标记文件)，不再耗退避时间
+    if _image_quota_marked(save_dir):
+        return None
     headers = {
         "Authorization": f"Bearer {IMAGE_API_KEY}",
         "Content-Type": "application/json"
@@ -1919,6 +1979,7 @@ def _call_image_api(prompt_text: str, drawing: dict, save_dir: str, max_retries:
         "n": 1,
         "size": "1024x1024"
     }
+    quota_streak = 0  # 连续限流/配额类失败计数
     for attempt in range(max_retries):
         try:
             resp = requests.post(IMAGE_API_URL, headers=headers, json=data, timeout=300)
@@ -1954,13 +2015,29 @@ def _call_image_api(prompt_text: str, drawing: dict, save_dir: str, max_retries:
                 except Exception:
                     pass
                 print(f"  图片API失败(尝试{attempt+1}): {resp.status_code} {body}")
+                low = body.lower()
+                # 额度/余额/鉴权类失败：重试无意义，立即标记并放弃（上层走本地兜底+告警）
+                if resp.status_code in (401, 402) or any(
+                        k in low for k in ("余额", "额度", "balance", "insufficient", "quota", "exceeded limit")):
+                    _mark_image_quota(save_dir, f"生图API {resp.status_code} {body}".strip())
+                    return None
                 if resp.status_code == 403:
-                    # 403=平台滚动限流/配额窗口: 立即重试必然连败,指数退避等窗口
-                    wait = min(30 * (attempt + 1), 120)
+                    # 403=平台滚动限流/配额窗口: 立即重试必然连败,退避等窗口；
+                    # 连续3次仍403视为窗口内额度耗尽，标记后放弃（服务内13张图
+                    # 不再各熬满退避链，总等待从~15分钟缩到~1.5分钟）
+                    quota_streak += 1
+                    if quota_streak >= 3:
+                        _mark_image_quota(save_dir, f"生图平台滚动限流(403×{quota_streak})")
+                        return None
+                    wait = min(15 * quota_streak, 45)
                     print(f"    限流退避{wait}秒...")
                     time.sleep(wait)
                 elif resp.status_code == 429:
-                    time.sleep(15 * (attempt + 1))
+                    quota_streak += 1
+                    if quota_streak >= 3:
+                        _mark_image_quota(save_dir, f"生图API限流(429×{quota_streak})")
+                        return None
+                    time.sleep(min(15 * quota_streak, 45))
                 else:
                     time.sleep(5)
         except Exception as e:
@@ -1973,7 +2050,8 @@ def _call_image_api(prompt_text: str, drawing: dict, save_dir: str, max_retries:
 
 
 def classify_drawing_backend(drawing: dict) -> str:
-    """按图纸类型分类：effect=真实效果图走GPT；diagram=平面/立面/节点/分析类走本地图示。"""
+    """按图纸类型分类：civil=土木/建筑走本地确定性；mech=机械走GPT工程图(本地兜底)；
+    effect=真实效果图走GPT；diagram=设计/通用图示走本地图示。"""
     text = " ".join([
         str(drawing.get("type", "")),
         str(drawing.get("title", "")),
@@ -1998,14 +2076,21 @@ def classify_drawing_backend(drawing: dict) -> str:
         "mechanical", "机械", "机构", "零件", "部件", "装配", "受力", "载荷", "应力",
         "行程", "参数", "尺寸", "标注", "公差", "motion", "force", "assembly", "parameter", "structure"
     ]
-    # 土木/建筑优先 —— 归入diagram分支（GPT工程制图生图）
-    if str(drawing.get("type", "")).lower() in ("civil", "土木", "建筑") or any(k in text for k in civil_keywords):
-        return "diagram"
-    if any(k in text for k in diagram_keywords):
-        return "diagram"
+    # ① 土木/建筑(含repair补齐标签的type="civil") → 本地确定性工程图。
+    #    2026-09-09教训：repair标签文本常无土木关键词，漏判会误入机械CAD的
+    #    SVG路径，曾是全链OOM根因链的一环。
+    if str(drawing.get("type", "")).strip().lower() in ("civil", "土木", "建筑", "建筑施工") or any(k in text for k in civil_keywords):
+        return "civil"
+    # ② 真实效果图 → GPT效果图API
     if any(k in text for k in effect_keywords):
         return "effect"
+    # ③ 机械信号 → GPT工程图API（用户2026-09-09拍板：机械图纸用GPT生图，
+    #    失败/额度满时本地确定性兜底）。必须先于通用diagram关键词判定，
+    #    否则"机构运动示意图"会被"示意图"抢先归入本地图示。
     if any(k in text for k in mech_signals) or any(k in str(drawing.get(k, "")).lower() for k in ("structured", "meta", "payload", "parameters", "technical_params", "critical_params", "numeric_annotations")):
+        return "mech"
+    # ④ 设计/通用图示 → 本地图示
+    if any(k in text for k in diagram_keywords):
         return "diagram"
     if any(k in text for k in ["gantt", "甘特", "时序", "流程", "结构", "原理", "装配", "受力", "布局"]):
         return "diagram"
@@ -2286,11 +2371,22 @@ def _fit_text(draw, text, font, max_width):
 
 
 def _is_blank_image(img_path: str) -> bool:
-    """粗略判断生成图是否近乎空白，避免把白图写入成果目录。"""
+    """粗略判断生成图是否近乎空白，避免把白图写入成果目录。
+
+    2026-09-09 汤圆OOM教训：曾经 `list(img.getdata())` 直接物化全图像素，
+    对 7500 万像素的巨图会分配 ~5GB 的 Python 元组对象，3.8G 小机必死。
+    现在先把图等比缩到 ≤400×400 再统计——空白判定语义不变（白底缩放后仍白），
+    内存上限固定在百KB级。缩放对极端细线可能略微稀释，但空白判定本就是
+    粗阈值(≥96%白)，400px 采样密度足够。
+    """
     try:
         img = Image.open(img_path).convert("RGB")
     except Exception:
         return False
+    try:
+        img.thumbnail((400, 400))
+    except Exception:
+        pass
     px = list(img.getdata())
     total = len(px) or 1
     white = sum(1 for r, g, b in px if r >= 248 and g >= 248 and b >= 248)
@@ -2319,13 +2415,14 @@ def generate_diagram_image(drawing: dict, save_dir: str) -> Optional[str]:
     img_type = drawing.get("type", "结构图")
     title = drawing.get("title", "结构示意图")
     description = drawing.get("description", "")
-    # 判断是否为土木/建筑类图纸
+    # 判断是否为土木/建筑类图纸：type显式声明也算（repair补齐标签type="civil"
+    # 但标题常无土木关键词，漏判曾误入机械CAD路径）
     arch_text = re.sub(r'\s+', '', " ".join([
         str(drawing.get("type", "")),
         str(drawing.get("title", "")),
         str(drawing.get("description", "")),
     ]))
-    is_civil = any(k in arch_text for k in (
+    is_civil = str(drawing.get("type", "")).strip().lower() in ("civil", "土木", "建筑", "建筑施工") or any(k in arch_text for k in (
         "平面图", "立面图", "剖面图", "标准层", "柱网", "框架",
         "配筋图", "基础图", "节点图", "构造节点", "节点详图", "详图",
         "施工平面", "施工进度", "横道图", "正立面", "侧立面",

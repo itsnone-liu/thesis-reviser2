@@ -20,7 +20,33 @@ from core import (
     generate_all_images,
     extract_mech_json_blocks, strip_mech_json_blocks,
     merge_mech_json_into_drawings,
+    image_quota_warning,
 )
+
+
+def _emit_image_quota_warning(img_dir, update):
+    """生图额度耗尽时向任务进度推送警告（webapp 会把它写进任务消息，用户端可见）。"""
+    try:
+        if not img_dir:
+            return
+        info = image_quota_warning(img_dir)
+        if info:
+            update(f"⚠️ 生图额度已满（{info.get('reason', '')}）：图纸已用本地确定性工程图兜底，"
+                   f"可稍后重跑本任务恢复GPT生图", 22)
+    except Exception:
+        pass
+
+
+def _write_render_meta(docx_path, drawings_dir):
+    """把本篇实际图纸目录记到 docx 旁，render_task 审计时据此读额度告警标记。"""
+    try:
+        if not drawings_dir:
+            return
+        meta_path = str(docx_path) + ".render_meta.json"
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump({"drawings_dir": drawings_dir}, f, ensure_ascii=False)
+    except Exception:
+        pass
 
 
 def render(txt_path: str, docx_path: str, paper_type: str = "管理",
@@ -92,6 +118,8 @@ def render(txt_path: str, docx_path: str, paper_type: str = "管理",
                 new_imgs = generate_all_images(missing, drawing_folder, max_workers=1)
                 drawing_images.update(new_imgs)
                 update(f"补生完成，共 {len(drawing_images)} 张设计图", 20)
+                _emit_image_quota_warning(drawing_folder, update)
+                _write_render_meta(docx_path, drawing_folder)
         else:
             # 需要生成图片
             if drawings:
@@ -104,6 +132,8 @@ def render(txt_path: str, docx_path: str, paper_type: str = "管理",
                 update(f"正在生成 {len(drawings)} 张设计图纸...", 15)
                 drawing_images = generate_all_images(drawings, img_dir, max_workers=1)
                 update(f"已生成 {len(drawing_images)} 张设计图", 20)
+                _emit_image_quota_warning(img_dir, update)
+                _write_render_meta(docx_path, img_dir)
             else:
                 update("未发现设计图纸标签", 10)
 

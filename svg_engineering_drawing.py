@@ -652,7 +652,11 @@ def generate_engineering_svg(drawing: Dict[str, Any], out_path: str) -> str:
 
     parts = [
         f'<?xml version="1.0" encoding="UTF-8"?>',
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}mm" height="{HEIGHT}mm" viewBox="0 0 {WIDTH} {HEIGHT}">',
+        # 宽高禁止带物理单位(mm)：ImageMagick 会按 -density 把 1800mm 换算成上万像素
+        # (1800mm≈70.9in，density 150 → 10629px 宽=7500万像素)，后续 PIL 逐像素
+        # 空白审计(_is_blank_image)会分配数 GB Python 对象，小内存机器直接 OOM。
+        # 无单位时 1 用户单位=1 像素，输出即 WIDTH×HEIGHT。
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}" viewBox="0 0 {WIDTH} {HEIGHT}">',
         _defs(),
     ]
     parts.extend(_header(title, subtitle, annotations))
@@ -697,13 +701,33 @@ def _svg_to_png(svg_path: str, png_path: str) -> str:
         except Exception:
             pass
     try:
-        subprocess.run(["convert", "-density", "150", "-background", "white", svg_path, png_path],
-                       check=True, capture_output=True, timeout=60)
+        # 不传 -density：SVG 宽高已是无单位像素，1用户单位=1像素输出；
+        # 传 density 会按物理尺寸放大栅格化，曾产出 10629x7085 巨图拖垮小内存机器。
+        subprocess.run(["convert", "-background", "white", svg_path, png_path],
+                       check=True, capture_output=True, timeout=120)
         if os.path.exists(png_path):
+            _cap_png_size(png_path, max_width=2600, max_height=2000)
             return png_path
     except Exception:
         pass
     raise RuntimeError("无法将SVG转换为PNG")
+
+
+def _cap_png_size(png_path: str, max_width: int = 2600, max_height: int = 2000) -> None:
+    """防御性尺寸封顶：任何来源的图纸PNG超过上限就等比缩小，防止巨图进入后续管线。"""
+    try:
+        from PIL import Image
+        with Image.open(png_path) as im:
+            w, h = im.size
+            if w <= max_width and h <= max_height:
+                return
+            scale = min(max_width / w, max_height / h)
+            im = im.convert("RGB")
+            im = im.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.LANCZOS)
+            im.save(png_path)
+            print(f"  [尺寸守卫] {os.path.basename(png_path)} {w}x{h} → {im.size[0]}x{im.size[1]}")
+    except Exception as exc:
+        print(f"  [尺寸守卫] 失败(保留原图): {exc}")
 
 
 def generate_engineering_png(drawing: Dict[str, Any], save_dir: str) -> Optional[str]:
