@@ -124,7 +124,7 @@ def main():
         agg = c["领域"]
         quota = CT.AGG.get(agg, (0, []))[0]
         have = counts.get(agg, {}).get("verified", 0)
-        if have >= quota:  # 已达配额领域让位短板领域
+        if have >= quota and "--no-quota" not in sys.argv:  # 已达配额领域让位短板领域
             cnt["quota"] += 1
             continue
         probs = caselib.validate_case(c)
