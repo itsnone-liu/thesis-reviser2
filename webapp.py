@@ -130,6 +130,9 @@ def _repair_civil_figure_declarations(txt: str) -> str:
     import re
     if "土木" not in txt[:3000] and "<drawing" not in txt:
         return txt
+    # 清理旧版本追加的自描述补丁，避免历史正文在重试时累积双重编号。
+    txt = re.sub(r'<drawing[^>]*title="正文引用图[^>]*?/>' , "", txt)
+    txt = re.sub(r'<table[^>]*title="正文引用表[^>]*?/>' , "", txt)
     declared = set(re.findall(r'<drawing[^>]*title=["\']图(\d+-\d+)', txt))
     declared_tables = set(re.findall(r'<table[^>]*title=["\']表(\d+-\d+)', txt))
     # 以正文引用为准，自动发现本批次缺失的任意章节式图/表声明。
