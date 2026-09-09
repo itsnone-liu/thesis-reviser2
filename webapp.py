@@ -126,7 +126,14 @@ def is_quota_error(e):
     return "1308" in s or "5小时" in s or "使用上限" in s
 
 def _repair_civil_figure_declarations(txt: str) -> str:
-    """补齐土木正文引用但生成器漏报的图表声明；只补确定性标签，不改正文事实。"""
+    """补齐土木正文引用但生成器漏报的图表声明；只补确定性标签，不改正文事实。
+
+    2026-09-09 验收教训：LLM 常把"表2-1 标准层主要功能房间一览表"写成孤立
+    注行却不产出 <table> 标签；旧逻辑在首个引用前另插通用占位表"表N-M 土木
+    工程计算表"，孤立注行原样保留 → 同号表注×2 → 审计"表注编号重复"❌。
+    现在孤立注行就地转成以【注行真实标题】命名的标签；与已声明标签同号的
+    孤立注行(重复注)删除；纯正文引用缺声明的仍按原方式补通用标签。
+    """
     import re
     if "土木" not in txt[:3000] and "<drawing" not in txt:
         return txt
@@ -135,25 +142,78 @@ def _repair_civil_figure_declarations(txt: str) -> str:
     txt = re.sub(r'<table[^>]*id="repair-[^"]+"[^>]*/>', "", txt)
     declared = set(re.findall(r'<drawing[^>]*title=["\']图(\d+-\d+)', txt))
     declared_tables = set(re.findall(r'<table[^>]*title=["\']表(\d+-\d+)', txt))
+
+    # [FIGURES]自报清单在渲染时整块剥离(core.py 0908修复)，绝不能把标签转进去；
+    # 但它是"真实标题"的矿藏——插入补齐标签时优先用清单里的原名，不再用通用占位名。
+    manifest_titles = {}   # "图1-1" -> "建筑效果示意图"
+    for blk in re.findall(r'\[FIGURES\]\s*(.*?)\[/FIGURES\]', txt, re.S):
+        for ln in blk.split("\n"):
+            m = re.match(r"^\s*([图表])\s*(\d{1,2}-\d{1,3})\s+(\S.{1,38}\S)\s*$", ln.strip())
+            if m:
+                manifest_titles[f"{m.group(1)}{m.group(2)}"] = m.group(3)
+
+    # --- 正文孤立注行治理(仅正文；[FIGURES]清单块内的不算) ---
+    cap_re = re.compile(r'^([图表])\s*(\d{1,2}-\d{1,3})\s+(\S.{1,38}\S)\s*$')
+    ref_sent = re.compile(r'显示|如下|所示|可知|可以看出|列出|给出|反映了|表明|中可')
+    masked = re.sub(r'\[FIGURES\]\s*.*?\[/FIGURES\]', lambda m: "\n" * m.group(0).count("\n"), txt, flags=re.S)
+    lines = masked.split("\n")   # 与txt行号对齐(用空行占位保持行号)
+    converted = []
+    drop_idx = set()
+    for i, ln in enumerate(lines):
+        s = ln.strip()
+        if not s or s.startswith("<") or s.endswith(("。", "，", "；", "：", "！", "？")):
+            continue
+        m = cap_re.match(s)
+        if not m or ref_sent.search(s):
+            continue
+        kind, num, title_body = m.group(1), m.group(2), m.group(3)
+        declared_set = declared if kind == "图" else declared_tables
+        if num in declared_set:
+            drop_idx.add(i)          # 重复注行：已声明同号标签，标签渲染自带注
+        else:
+            converted.append((i, kind, num, f"{kind}{num} {title_body}"))
+            declared_set.add(num)
+    next_id = 100
+    for i, kind, num, real_title in converted:
+        if kind == "表":
+            lines[i] = (f'<table id="repair-{next_id}" title="{real_title}" '
+                        f'header="项目,数值" rows="正文已引用项目,详见正文计算"/>')
+        else:
+            lines[i] = (f'<drawing id="repair-{next_id}" type="civil" title="{real_title}" '
+                        f'description="根据正文孤立注行补齐图纸声明；具体工程参数沿用正文已确立值。"/>')
+        next_id += 1
+    if drop_idx or converted:
+        txt = "\n".join(lines)
+
     # 以正文引用为准，自动发现本批次缺失的任意章节式图/表声明。
+    # 插入位置必须避开[FIGURES]清单块(渲染时整块剥离，标签插进去=白插)。
+    _fig_spans = [m.span() for m in re.finditer(r'\[FIGURES\]\s*.*?\[/FIGURES\]', txt, re.S)]
+    def _first_ref_pos(kind_char: str, num: str):
+        for m in re.finditer(rf'{kind_char}\s*{re.escape(num)}', txt):
+            if any(a <= m.start() < b for a, b in _fig_spans):
+                continue
+            return m.start()
+        return None
     ref_figs = set(re.findall(r'(?<![简插附纸样意标流路线效])图\s*(\d+-\d+)', txt))
     ref_tables = set(re.findall(r'表\s*(\d+-\d+)', txt))
-    missing_figs = [(num, f"图{num} 土木工程示意图") for num in sorted(ref_figs) if num not in declared]
-    missing_tables = [(num, f"表{num} 土木工程计算表") for num in sorted(ref_tables) if num not in declared_tables]
+    def _title_for(kind_char: str, num: str) -> str:
+        real = manifest_titles.get(f"{kind_char}{num}")
+        return f"{kind_char}{num} {real}" if real else f"{kind_char}{num} 土木工程{'示意图' if kind_char == '图' else '计算表'}"
+    missing_figs = [(num, _title_for("图", num)) for num in sorted(ref_figs) if num not in declared]
+    missing_tables = [(num, _title_for("表", num)) for num in sorted(ref_tables) if num not in declared_tables]
     if not missing_figs and not missing_tables:
         return txt
     # 标签必须插在对应正文引用之前，不能统一追加到文末；否则 registry 会把它归到末章。
     inserts = []
-    next_id = 100
     for num, title in missing_figs:
         tag = f'<drawing id="repair-{next_id}" type="civil" title="{title}" description="根据正文已引用的{title}补齐图纸声明；具体工程参数沿用正文已确立值。"/>\n'
-        pos = re.search(rf'图\s*{re.escape(num)}', txt)
-        if pos: inserts.append((pos.start(), tag))
+        pos = _first_ref_pos("图", num)
+        if pos is not None: inserts.append((pos, tag))
         next_id += 1
     for num, title in missing_tables:
         tag = f'<table id="repair-{next_id}" title="{title}" header="项目,数值" rows="正文已引用项目,详见正文计算"/>\n'
-        pos = re.search(rf'表\s*{re.escape(num)}', txt)
-        if pos: inserts.append((pos.start(), tag))
+        pos = _first_ref_pos("表", num)
+        if pos is not None: inserts.append((pos, tag))
         next_id += 1
     for pos, tag in sorted(inserts, reverse=True):
         txt = txt[:pos] + tag + txt[pos:]
