@@ -273,8 +273,8 @@ def law_confirm(x: ConfirmRequest, request: Request):
 @app.post("/api/profile")
 def make_profile(x: ProfileRequest, request: Request):
     user_from_request(request)
-    if x.type not in ("管理", "设计", "机械"):
-        raise HTTPException(400, "画像接口支持管理、设计、机械")
+    if x.type not in ("管理", "设计", "机械", "土木"):
+        raise HTTPException(400, "画像接口支持管理、设计、机械、土木")
     p = generate_profile(x.type, x.title, x.target, x.major, x.context)
     if not p.get("core_problems"): p["core_problems"] = ["待补充研究问题"]
     return p
@@ -282,7 +282,7 @@ def make_profile(x: ProfileRequest, request: Request):
 @app.post("/api/start_gen")
 def start_gen(x: GenerateRequest, request: Request):
     u=user_from_request(request)
-    if x.type not in ("管理","设计","机械","土木"): raise HTTPException(400,"该接口支持管理、设计、机械；法学请使用出题确认")
+    if x.type not in ("管理","设计","机械","土木"): raise HTTPException(400,"该接口支持管理、设计、机械、土木；法学请使用出题确认")
     tid=start_task(u["id"],x.type,x.profile,x.cover,x.profile.get("title","")); return {"task_id":tid,"status":"queue"}
 
 @app.get("/api/status/{tid}")
