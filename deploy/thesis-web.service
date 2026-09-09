@@ -13,7 +13,7 @@ ExecStart=/usr/bin/python3 /opt/thesis-reviser2/webapp.py
 Restart=always
 RestartSec=5
 # Keep OpenClaw stable on the 3.8G host.
-MemoryMax=2800M
+MemoryMax=3400M
 
 [Install]
 WantedBy=multi-user.target
